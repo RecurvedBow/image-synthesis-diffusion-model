@@ -53,3 +53,12 @@ for epoch_index in range(epochs):
 # # Evaluation
 
 
+
+# # Forward Noise Process
+
+def add_noise(image, beta):
+    alpha = 1 - beta
+    alpha_cum = torch.prod(alpha)
+    random_array = torch.randn(image.shape)
+    noisy_image = random_array * (1 - alpha_cum) + torch.sqrt(alpha_cum) * image
+    return noisy_image
