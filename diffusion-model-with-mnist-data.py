@@ -24,20 +24,49 @@ train_labels = train_dataset.targets.numpy()
 
 assert (train_image_data.shape == np.array([60000, 28, 28])).all()
 assert (train_labels.shape == np.array([60000,])).all()
+
+
 # -
 
-# Plots the first 9 images.
-amount_images_to_show = 9
-grid_shape = np.array([3, 3])
-for image_index in range(amount_images_to_show):
-    plt.subplot(grid_shape[0], grid_shape[1], image_index + 1)
-    plt.xticks([])
-    plt.yticks([])
-    image_to_show = train_image_data[image_index]
-    plt.imshow(image_to_show, cmap="gray")
-plt.show()
+def plot_images(images):
+    """Plots the first 9 images."""
+    amount_images_to_show = 9
+    grid_shape = np.array([3, 3])
+    for image_index in range(amount_images_to_show):
+        plt.subplot(grid_shape[0], grid_shape[1], image_index + 1)
+        plt.xticks([])
+        plt.yticks([])
+        image_to_show = images[image_index]
+        plt.imshow(image_to_show, cmap="gray")
+    plt.show()
+
+
+plot_images(train_image_data)
 
 assert (train_labels[:9] == np.array([5, 0, 4, 1, 9, 2, 1, 3, 1])).all()
+
+
+# # Forward Noise Process
+
+def add_noise(image, beta):
+    alpha = 1 - beta
+    alpha_cum = torch.prod(alpha)
+    random_array = torch.randn(image.shape)
+    noisy_image = random_array * (1 - alpha_cum) + torch.sqrt(alpha_cum) * image
+    return noisy_image
+
+
+variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+noisy_images = add_noise(train_dataset.data, variances)
+plot_images(noisy_images)
+
+variances = torch.ones(9) * 0.75
+image = train_dataset.data[0]
+noisy_images = torch.zeros([9, image.shape[0], image.shape[1]])
+for i in range(9):
+    noisy_image = add_noise(image, variances[:i+1])
+    noisy_images[i] = noisy_image
+plot_images(noisy_images)
 
 # # Training
 
