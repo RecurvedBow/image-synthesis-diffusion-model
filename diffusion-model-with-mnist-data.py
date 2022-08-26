@@ -122,7 +122,7 @@ class NoisePredictionUnet(nn.Module):
         self.layers.append(EncoderBlock(amount_channels_with_timestep, amount_channels * 2))
         self.layers.append(Conv2dBlock(amount_channels * 2, amount_channels * 4))
         self.layers.append(DecoderBlock(amount_channels * 4, amount_channels * 2))
-        self.layers.append(Conv2dBlock(amount_channels * 2, amount_channels))
+        self.layers.append(nn.Conv2d(amount_channels * 2, amount_channels, 1))
 
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
@@ -151,7 +151,7 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch
 model = NoisePredictionUnet(1)
 for data, labels in train_loader:
     timestep = 3
-    predicted_noises = model(data, 0)
+    predicted_noises = model(data, timestep)
     assert predicted_noises.shape == data.shape
     break
 
