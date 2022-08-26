@@ -104,7 +104,7 @@ class EncoderBlock(nn.Module):
 class DecoderBlock(nn.Module):
     def __init__(self, amount_channels_input, amount_channels_output):
         super(DecoderBlock, self).__init__()
-        self.conv_block = Conv2dBlock(amount_channels_output + amount_channels_input, amount_channels_output)
+        self.conv_block = Conv2dBlock(amount_channels_output * 2, amount_channels_output)
         self.upsampling_layer = nn.ConvTranspose2d(amount_channels_input, amount_channels_output, 2, 2)
         
     def forward(self, x, skip_values):
@@ -120,8 +120,9 @@ class NoisePredictionUnet(nn.Module):
         self.layers = []
         amount_channels_with_timestep = amount_channels + 1
         self.layers.append(EncoderBlock(amount_channels_with_timestep, amount_channels * 2))
-        self.layers.append(Conv2dBlock(amount_channels * 2, amount_channels * 2))
-        self.layers.append(DecoderBlock(amount_channels * 2, amount_channels))
+        self.layers.append(Conv2dBlock(amount_channels * 2, amount_channels * 4))
+        self.layers.append(DecoderBlock(amount_channels * 4, amount_channels * 2))
+        self.layers.append(Conv2dBlock(amount_channels * 2, amount_channels))
 
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
@@ -133,6 +134,8 @@ class NoisePredictionUnet(nn.Module):
         x = self.layers[1](x)
         x = self.relu(x)
         x = self.layers[2](x, skip_values)
+        x = self.layers[3](x)
+        x = self.relu(x)
         x = self.sigmoid(x)
         return x
 
