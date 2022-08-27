@@ -134,8 +134,8 @@ class NoisePredictionUnet(nn.Module):
         x = self.layers[1](x)
         x = self.relu(x)
         x = self.layers[2](x, skip_values)
-        x = self.layers[3](x)
         x = self.relu(x)
+        x = self.layers[3](x)
         x = self.sigmoid(x)
         return x
 
