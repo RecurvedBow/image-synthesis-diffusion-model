@@ -127,8 +127,7 @@ class NoisePredictionUnet(nn.Module):
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
         
-    def forward(self, noisy_images, timestep):
-        x = torch.cat([noisy_images, torch.ones(noisy_images.shape) * timestep], axis = 1)
+    def forward(self, x):
         x, skip_values = self.layers[0](x)
         x = self.relu(x)
         x = self.layers[1](x)
@@ -151,7 +150,9 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch
 model = NoisePredictionUnet(1)
 for data, labels in train_loader:
     timestep = 3
-    predicted_noises = model(data, timestep)
+    timestep_embedding = torch.ones(data.shape) * timestep
+    x = torch.cat([data, timestep_embedding], dim=1)
+    predicted_noises = model(x)
     assert predicted_noises.shape == data.shape
     break
 
