@@ -77,16 +77,13 @@ plot_images(noisy_images)
 class Conv2dBlock(nn.Module):
     def __init__(self, amount_channels_input, amount_channels_output):
         super(Conv2dBlock, self).__init__()
-        self.layers = []
-        self.layers.append(nn.Conv2d(amount_channels_input, amount_channels_output, 3, padding=1))
-        self.layers.append(nn.BatchNorm2d(amount_channels_output))
-        self.layers.append(nn.Conv2d(amount_channels_output, amount_channels_output, 3, padding=1))
-        self.layers.append(nn.BatchNorm2d(amount_channels_output))
+        self.layers = nn.Sequential(nn.Conv2d(amount_channels_input, amount_channels_output, 3, padding=1),
+                                              nn.BatchNorm2d(amount_channels_output),
+                                              nn.Conv2d(amount_channels_output, amount_channels_output, 3, padding=1),
+                                              nn.BatchNorm2d(amount_channels_output))
     
     def forward(self, x):
-        for layer in self.layers:
-            x = layer(x)
-        return x
+        return self.layers(x)
     
 class EncoderBlock(nn.Module):
     def __init__(self, amount_channels_input, amount_channels_output):
@@ -117,24 +114,26 @@ class DecoderBlock(nn.Module):
 class NoisePredictionUnet(nn.Module):
     def __init__(self, amount_channels):
         super(NoisePredictionUnet, self).__init__()
-        self.layers = []
         amount_channels_with_timestep = amount_channels + 1
-        self.layers.append(EncoderBlock(amount_channels_with_timestep, amount_channels * 2))
-        self.layers.append(Conv2dBlock(amount_channels * 2, amount_channels * 4))
-        self.layers.append(DecoderBlock(amount_channels * 4, amount_channels * 2))
-        self.layers.append(nn.Conv2d(amount_channels * 2, amount_channels, 1))
-
+        
+        layers = []
+        layers.append(EncoderBlock(amount_channels_with_timestep, amount_channels * 2))
+        layers.append(Conv2dBlock(amount_channels * 2, amount_channels * 4))
+        layers.append(DecoderBlock(amount_channels * 4, amount_channels * 2))
+        layers.append(nn.Conv2d(amount_channels * 2, amount_channels, 1))
+        
+        self.module_list = nn.ModuleList(layers)
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
         
     def forward(self, x):
-        x, skip_values = self.layers[0](x)
+        x, skip_values = self.module_list[0](x)
         x = self.relu(x)
-        x = self.layers[1](x)
+        x = self.module_list[1](x)
         x = self.relu(x)
-        x = self.layers[2](x, skip_values)
+        x = self.module_list[2](x, skip_values)
         x = self.relu(x)
-        x = self.layers[3](x)
+        x = self.module_list[3](x)
         x = self.sigmoid(x)
         return x
 
@@ -148,6 +147,8 @@ train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=bat
 test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
 
 model = NoisePredictionUnet(1)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+
 for data, labels in train_loader:
     timestep = 3
     timestep_embedding = torch.ones(data.shape) * timestep
