@@ -59,7 +59,7 @@ def add_noise(image, beta):
 
 variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
 noisy_images = add_noise(train_dataset.data, variances)
-plot_images(noisy_images)
+#plot_images(noisy_images)
 
 variances = torch.ones(900) * 0.015
 image = train_dataset.data[0]
@@ -167,3 +167,53 @@ for epoch_index in range(epochs):
 # # Evaluation
 
 
+# -
+
+# # Sampling
+
+# +
+def sample_image(image_size, beta, noise_predictor, simple_variance=False):
+    "sample image"
+    
+    timesteps = beta.shape[0] - 1
+    alpha = 1 - beta
+    alpha_cum = torch.cumprod(alpha, dim=0)
+    if simple_variance:
+        variances = beta
+    else:
+        alpha_cum_t = torch.cat(alpha_cum, torch.Tensor([0]))
+        alpha_cum_t_minus_1 = torch.cat(torch.Tensor([0]), alpha_cum)
+        variances = (1-alpha_cum_t_minus_1)/(1-alpha_cum_t)
+        variances = variances[:-1] * beta
+    
+    x_t = torch.normal(torch.zeros(image_size), torch.ones(image_size))
+    
+    for timestep in range(timesteps, -1, -1):
+        predicted_noise = noise_predictor(x_t, timestep)
+        z = torch.normal(torch.zeros(image_size), torch.ones(image_size))
+        
+        x_t = variances[timestep] * z + (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise)
+        
+    return x_t
+
+amount_channels = 1
+test_images, test_labels = next(iter(train_loader)) 
+test_image = test_images[0] 
+test_label = test_labels[0] 
+
+def fake_noise_pred(image, timestep):
+    return torch.normal(torch.zeros_like(image), torch.ones_like(image))
+
+image_size = test_image.shape
+beta = torch.ones(10)
+
+sample = sample_image(image_size, beta, fake_noise_pred, simple_variance=True)
+
+print(sample)
+    
+    
+    
+    
+    
+    
+    
