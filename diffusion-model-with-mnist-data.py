@@ -8,6 +8,13 @@ from torchvision import datasets, transforms
 import torch
 import torch.nn as nn
 
+if torch.cuda.is_available():
+    print("Using GPU.")
+    device = "cuda"
+else:
+    print("Using CPU.")
+    device = "cpu"
+
 # # Load MNIST Dataset
 
 # +
@@ -143,8 +150,8 @@ class NoisePredictionUnet(nn.Module):
 
 def get_loss(predicted_noise):
     mse_loss = nn.MSELoss()
-    expected_noise = torch.normal(torch.zeros(predicted_noise.shape), 1)
-    return mse_loss(predicted_noise, expected_noise)
+    expected_noise = torch.normal(torch.zeros(predicted_noise.shape), 1).to(device)
+    return mse_loss(predicted_noise, expected_noise).to(device)
 
 
 # # Training
@@ -153,13 +160,13 @@ batch_size = 60
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False)
 test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
 
-model = NoisePredictionUnet(1)
+model = NoisePredictionUnet(1).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
 for data, labels in train_loader:
     timestep = 3
     timestep_embedding = torch.ones(data.shape) * timestep
-    x = torch.cat([data, timestep_embedding], dim=1)
+    x = torch.cat([data, timestep_embedding], dim=1).to(device)
     predicted_noises = model(x)
     assert predicted_noises.shape == data.shape
     break
@@ -167,24 +174,24 @@ for data, labels in train_loader:
 
 def get_X_train(images, variances):
     batch_size = images.shape[0]
-    random_array = torch.randn(images.shape)
-    timesteps = torch.Tensor(range(variances.shape[0])).int()
-    alphas_cum = torch.cumprod(variances, dim=0)
-    noisy_images = torch.zeros(images.shape)
-    noisy_images = torch.repeat_interleave(noisy_images, timesteps.shape[0], dim=0)
-    timesteps_embedding = torch.zeros(noisy_images.shape)
+    random_array = torch.randn(images.shape).to(device)
+    timesteps = torch.Tensor(range(variances.shape[0])).int().to(device)
+    alphas_cum = torch.cumprod(variances, dim=0).to(device)
+    noisy_images = torch.zeros(images.shape).to(device)
+    noisy_images = torch.repeat_interleave(noisy_images, timesteps.shape[0], dim=0).to(device)
+    timesteps_embedding = torch.zeros(noisy_images.shape).to(device)
     for timestep in timesteps:
         alpha_cum = alphas_cum[timestep]
         noisy_images[timestep*batch_size:(timestep + 1) * batch_size] = \
             random_array * (1 - alpha_cum) + torch.sqrt(alpha_cum) * images
         timesteps_embedding[timestep*batch_size:(timestep + 1) * batch_size] = timestep
-    noisy_images_with_timesteps = torch.cat([noisy_images, timesteps_embedding], dim=1)
+    noisy_images_with_timesteps = torch.cat([noisy_images, timesteps_embedding], dim=1).to(device)
     return noisy_images_with_timesteps
 
 
 # +
-variances = torch.ones(10) * 0.125 # Low amount of variances to verify training implementation.
-timesteps = torch.Tensor(range(variances.shape[0]))
+variances = torch.ones(10).to(device) * 0.125 # Low amount of variances to verify training implementation.
+timesteps = torch.Tensor(range(variances.shape[0])).to(device)
 
 epochs = 10
 epoch_mean_train_losses = []
@@ -192,9 +199,9 @@ for epoch_index in range(epochs):
     batch_train_losses = []
     for batch_index, train_data_batch in enumerate(train_loader):
         images, _ = train_data_batch
+        images = images.to(device)
         X_train = get_X_train(images, variances)
         predicted_noise = model(X_train)
-        
         optimizer.zero_grad()
         loss = get_loss(predicted_noise)
         batch_train_losses.append(loss.item())
