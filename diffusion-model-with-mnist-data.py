@@ -208,7 +208,8 @@ for epoch_index in range(epochs):
         loss.backward()
         optimizer.step()
         
-        print("\r", end=f"Batch {batch_index + 1} - Training Loss: {batch_train_losses[-1]}")
+        if batch_index % 10 == 0:
+            print("\r", end=f"Batch {batch_index + 1} - Training Loss: {batch_train_losses[-1]}")
         
     mean_loss = np.mean(batch_train_losses)
     epoch_mean_train_losses.append(mean_loss)
