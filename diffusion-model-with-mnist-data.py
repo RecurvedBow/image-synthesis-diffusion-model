@@ -61,11 +61,12 @@ variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
 noisy_images = add_noise(train_dataset.data, variances)
 plot_images(noisy_images)
 
-variances = torch.ones(900) * 0.015
+variances = torch.ones(100) * 0.125
 image = train_dataset.data[0]
 noisy_images = torch.zeros([9, image.shape[0], image.shape[1]])
 for i in range(9):
-    noisy_image = add_noise(image, variances[:i * 100 + 1])
+    index_stepsize = variances.shape[0] / 8
+    noisy_image = add_noise(image, variances[:int(i * index_stepsize) + 1])
     noisy_images[i] = noisy_image
 plot_images(noisy_images)
 
@@ -140,14 +141,20 @@ class NoisePredictionUnet(nn.Module):
 
 # -
 
+def get_loss(predicted_noise):
+    mse_loss = nn.MSELoss()
+    expected_noise = torch.normal(torch.zeros(predicted_noise.shape), 1)
+    return mse_loss(predicted_noise, expected_noise)
+
+
 # # Training
 
-batch_size = 100
+batch_size = 60
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False)
 test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
 
 model = NoisePredictionUnet(1)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
 for data, labels in train_loader:
     timestep = 3
@@ -157,15 +164,56 @@ for data, labels in train_loader:
     assert predicted_noises.shape == data.shape
     break
 
+
+def get_X_train(images, variances):
+    batch_size = images.shape[0]
+    random_array = torch.randn(images.shape)
+    timesteps = torch.Tensor(range(variances.shape[0])).int()
+    alphas_cum = torch.cumprod(variances, dim=0)
+    noisy_images = torch.zeros(images.shape)
+    noisy_images = torch.repeat_interleave(noisy_images, timesteps.shape[0], dim=0)
+    timesteps_embedding = torch.zeros(noisy_images.shape)
+    for timestep in timesteps:
+        alpha_cum = alphas_cum[timestep]
+        noisy_images[timestep*batch_size:(timestep + 1) * batch_size] = \
+            random_array * (1 - alpha_cum) + torch.sqrt(alpha_cum) * images
+        timesteps_embedding[timestep*batch_size:(timestep + 1) * batch_size] = timestep
+    noisy_images_with_timesteps = torch.cat([noisy_images, timesteps_embedding], dim=1)
+    return noisy_images_with_timesteps
+
+
 # +
-variances = torch.ones(1000) * 0.015
+variances = torch.ones(10) * 0.125 # Low amount of variances to verify training implementation.
 timesteps = torch.Tensor(range(variances.shape[0]))
 
 epochs = 10
+epoch_mean_train_losses = []
 for epoch_index in range(epochs):
+    batch_train_losses = []
     for batch_index, train_data_batch in enumerate(train_loader):
-        ...
+        images, _ = train_data_batch
+        X_train = get_X_train(images, variances)
+        predicted_noise = model(X_train)
+        
+        optimizer.zero_grad()
+        loss = get_loss(predicted_noise)
+        batch_train_losses.append(loss.item())
+        loss.backward()
+        optimizer.step()
+        
+        print("\r", end=f"Batch {batch_index + 1} - Training Loss: {batch_train_losses[-1]}")
+        
+    mean_loss = np.mean(batch_train_losses)
+    epoch_mean_train_losses.append(mean_loss)
+    
+    print(f"\rEpoch {epoch_index + 1} - Average Training Loss: {epoch_mean_train_losses[-1]}")
+# -
 
 # # Evaluation
+
+plt.plot(range(len(epoch_mean_train_losses)), epoch_mean_train_losses, linestyle="dashed")
+plt.xlabel("Mean Training Loss")
+plt.ylabel("Epoch")
+plt.show()
 
 
