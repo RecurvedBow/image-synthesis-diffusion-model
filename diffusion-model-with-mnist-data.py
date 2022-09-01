@@ -56,20 +56,27 @@ assert (train_labels[:9] == np.array([5, 0, 4, 1, 9, 2, 1, 3, 1])).all()
 
 # # Forward Noise Process
 
+# +
 def add_noise(image, beta):
     alpha = 1 - beta
     alpha_cum = torch.prod(alpha)
-    random_array = torch.randn(image.shape)
+    return apply_noise(image, alpha_cum)
+
+def apply_noise(image, alpha_cum):
+    random_array = torch.randn(image.shape).to(device)
     noisy_image = random_array * (1 - alpha_cum) + torch.sqrt(alpha_cum) * image
+    noisy_image = noisy_image.to(device)
     return noisy_image
 
 
-variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
-noisy_images = add_noise(train_dataset.data, variances)
+# -
+
+variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]).to(device)
+noisy_images = add_noise(train_dataset.data.to(device), variances).cpu()
 plot_images(noisy_images)
 
-variances = torch.ones(100) * 0.125
-image = train_dataset.data[0]
+variances = torch.ones(100).to(device) * 0.125
+image = train_dataset.data[0].to(device)
 noisy_images = torch.zeros([9, image.shape[0], image.shape[1]])
 for i in range(9):
     index_stepsize = variances.shape[0] / 8
@@ -174,7 +181,6 @@ for data, labels in train_loader:
 
 def get_X_train(images, variances):
     batch_size = images.shape[0]
-    random_array = torch.randn(images.shape).to(device)
     timesteps = torch.Tensor(range(variances.shape[0])).int().to(device)
     alphas_cum = torch.cumprod(variances, dim=0).to(device)
     noisy_images = torch.zeros(images.shape).to(device)
@@ -182,8 +188,7 @@ def get_X_train(images, variances):
     timesteps_embedding = torch.zeros(noisy_images.shape).to(device)
     for timestep in timesteps:
         alpha_cum = alphas_cum[timestep]
-        noisy_images[timestep*batch_size:(timestep + 1) * batch_size] = \
-            random_array * (1 - alpha_cum) + torch.sqrt(alpha_cum) * images
+        noisy_images[timestep*batch_size:(timestep + 1) * batch_size] = apply_noise(images, alpha_cum)
         timesteps_embedding[timestep*batch_size:(timestep + 1) * batch_size] = timestep
     noisy_images_with_timesteps = torch.cat([noisy_images, timesteps_embedding], dim=1).to(device)
     return noisy_images_with_timesteps
