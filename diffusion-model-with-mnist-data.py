@@ -168,15 +168,8 @@ train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=bat
 test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
 
 model = NoisePredictionUnet(1).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-for data, labels in train_loader:
-    timestep = 3
-    timestep_embedding = torch.ones(data.shape) * timestep
-    x = torch.cat([data, timestep_embedding], dim=1).to(device)
-    predicted_noises = model(x)
-    assert predicted_noises.shape == data.shape
-    break
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
 
 
 def get_X_train(images, variances):
@@ -198,8 +191,14 @@ def get_X_train(images, variances):
 variances = torch.ones(10).to(device) * 0.125 # Low amount of variances to verify training implementation.
 timesteps = torch.Tensor(range(variances.shape[0])).to(device)
 
-epochs = 10
+epochs = 100
 epoch_mean_train_losses = []
+
+min_epoch_train_loss = 0
+amount_learning_rate_decays = 3
+max_amount_epochs_cooldown = 2
+amount_epochs_cooldown = 0
+
 for epoch_index in range(epochs):
     batch_train_losses = []
     for batch_index, train_data_batch in enumerate(train_loader):
@@ -218,8 +217,25 @@ for epoch_index in range(epochs):
         
     mean_loss = np.mean(batch_train_losses)
     epoch_mean_train_losses.append(mean_loss)
-    
     print(f"\rEpoch {epoch_index + 1} - Average Training Loss: {epoch_mean_train_losses[-1]}")
+    
+    if amount_epochs_cooldown > 0:
+        amount_epochs_cooldown -= 1
+    if epoch_index == 0:
+        min_epoch_train_loss = epoch_mean_train_losses[-1]
+    elif amount_epochs_cooldown == 0:
+        if min_epoch_train_loss >= epoch_mean_train_losses[-1]:
+            min_epoch_train_loss = epoch_mean_train_losses[-1]
+        else:
+            if amount_learning_rate_decays == 0:
+                print(f"Stopping Training.")
+                break
+            else:
+                print(f"Loss did not decrease - decaying learning rate")
+                amount_learning_rate_decays -= 1
+                amount_epochs_cooldown = max_amount_epochs_cooldown
+                scheduler.step()
+
 # -
 
 # # Evaluation
