@@ -245,4 +245,22 @@ plt.xlabel("Mean Training Loss")
 plt.ylabel("Epoch")
 plt.show()
 
+# +
+data_batch, _ = next(iter(train_loader))
+timestep = 3
+timestep_embedding = torch.ones(data_batch.shape) * timestep
+x = torch.cat([data_batch, timestep_embedding], dim=1).to(device)
+predicted_noises = model(x)
+
+assert predicted_noises.shape == data_batch.shape
+
+predicted_noise = predicted_noises[0].detach().cpu().numpy()[0]
+plt.imshow(predicted_noise, cmap="gray")
+plt.show()
+
+expected_noise = torch.normal(torch.zeros(predicted_noise.shape), 1).to(device).cpu().numpy()
+plt.imshow(expected_noise, cmap="gray")
+plt.show()
+# -
+
 
