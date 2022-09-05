@@ -1,5 +1,6 @@
 # The module jupytext is used to treat this .py file as a jupyter notebook file. To keep the output after every session, go to "File" -> "Jupytext" -> "Pair Notebook with ipynb document". This generates a file PY_FILENAME.ipynb.
 
+
 # # Imports
 
 import numpy as np
@@ -336,3 +337,53 @@ plt.show()
 # -
 
 
+# -
+
+# # Sampling
+
+# +
+def denoising_process(images, beta, noise_predictor, simple_variance=False):
+    "sample image"
+    
+    images_size = images.shape
+    timesteps = beta.shape[0] - 1
+    alpha = 1 - beta
+    alpha_cum = torch.cumprod(alpha, dim=0)
+    if simple_variance:
+        variances = beta
+    else:
+        alpha_cum_t_minus_1 = torch.cat([torch.Tensor([0]), alpha_cum[:-1]], axis=0)
+        variances = (1-alpha_cum_t_minus_1)/(1-alpha_cum)
+        variances = variances * beta
+    
+    x_t = images
+    
+    for timestep in range(timesteps, 0, -1):
+        predicted_noise = noise_predictor(x_t, timestep)
+        z = torch.normal(torch.zeros(images_size), torch.ones(images_size))
+        if timestep == 1:
+          z = torch.zeros(images_size)
+        x_t = variances[timestep] * z + (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise) \
+          / torch.sqrt(alpha[timestep])     
+    return x_t
+
+amount_channels = 1
+test_images, test_labels = next(iter(test_loader)) 
+test_image = test_images[0] 
+test_label = test_labels[0] 
+
+def fake_noise_pred(image, timestep):
+    return torch.normal(torch.zeros_like(image), torch.ones_like(image))
+
+image_size = test_image.shape
+beta = torch.ones(10) * 0.15
+
+samples = denoising_process(torch.ones(test_images.shape), beta, fake_noise_pred)
+
+assert samples.shape == test_images.shape
+
+plt.subplot(1,2,1)
+plt.imshow(samples[0][0], cmap="gray")
+plt.subplot(1,2,2)
+plt.imshow(samples[1][0], cmap="gray")
+plt.show()
