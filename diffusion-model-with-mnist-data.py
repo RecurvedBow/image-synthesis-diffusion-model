@@ -170,7 +170,7 @@ for epoch_index in range(epochs):
 # # Sampling
 
 # +
-def sample_image(image, beta, noise_predictor, simple_variance=False):
+def denoising_process(image, beta, noise_predictor, simple_variance=False):
     "sample image"
     
     image_size = image.shape
@@ -180,17 +180,19 @@ def sample_image(image, beta, noise_predictor, simple_variance=False):
     if simple_variance:
         variances = beta
     else:
-        alpha_cum_t_minus_1 = torch.cat(torch.Tensor([0]), alpha_cum)
+        alpha_cum_t_minus_1 = torch.cat([torch.Tensor([0]), alpha_cum[:-1]], axis=0)
         variances = (1-alpha_cum_t_minus_1)/(1-alpha_cum)
-        variances = variances[:-1] * beta
+        variances = variances * beta
     
-    x_t = torch.normal(torch.zeros(image_size), torch.ones(image_size))
+    x_t = image
     
     for timestep in range(timesteps, 0, -1):
         predicted_noise = noise_predictor(x_t, timestep)
-        z = torch.normal(torch.zeros(image_size), torch.ones(image_size))        
-        x_t = variances[timestep] * z + (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise) / torch.sqrt(alpha[timestep])
-    x_t = (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise) / torch.sqrt(alpha[timestep])        
+        z = torch.normal(torch.zeros(image_size), torch.ones(image_size))
+        if timestep == 1:
+          z = torch.zeros(image_size)
+        x_t = variances[timestep] * z + (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise) \
+          / torch.sqrt(alpha[timestep])     
     return x_t
 
 amount_channels = 1
@@ -202,9 +204,14 @@ def fake_noise_pred(image, timestep):
     return torch.normal(torch.zeros_like(image), torch.ones_like(image))
 
 image_size = test_image.shape
-beta = torch.ones(10)
+beta = torch.ones(10) * 0.15
 
-sample = sample_image(torch.ones(image_size), beta, fake_noise_pred, simple_variance=True)
+samples = denoising_process(torch.ones(test_images.shape), beta, fake_noise_pred)
 
-plt.imshow(sample[0], cmap="gray")
-plt.show
+assert samples.shape == test_images.shape
+
+plt.subplot(1,2,1)
+plt.imshow(samples[0][0], cmap="gray")
+plt.subplot(1,2,2)
+plt.imshow(samples[1][0], cmap="gray")
+plt.show()
