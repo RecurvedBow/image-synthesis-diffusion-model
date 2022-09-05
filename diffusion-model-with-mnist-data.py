@@ -311,6 +311,39 @@ for epoch_index in range(epochs):
 
 # -
 
+# # Sampling
+
+def denoising_process(images, beta, noise_predictor, simple_variance=False):
+    "sample image"
+    
+    images_size = images.shape
+    timesteps = beta.shape[0] - 1
+    alpha = 1 - beta
+    alpha_cum = torch.cumprod(alpha, dim=0).to(device)
+    if simple_variance:
+        variances = beta
+    else:
+        alpha_cum_t_minus_1 = torch.cat([torch.Tensor([0]).to(device), alpha_cum[:-1]], axis=0).to(device)
+        variances = (1-alpha_cum_t_minus_1)/(1-alpha_cum) 
+        variances = variances * beta
+    
+    variances = variances.to(device)
+    x_t = images.to(device)
+    
+    with torch.no_grad():
+        for timestep in range(timesteps, 0, -1):
+            predicted_noise = noise_predictor(x_t, timestep).to(device)
+            z = torch.normal(torch.zeros(images_size), torch.ones(images_size))
+
+            if timestep == 1:
+                z = torch.zeros(images_size)
+
+            z = z.to(device)
+            x_t = (variances[timestep] * z + (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise) \
+            / torch.sqrt(alpha[timestep])).to(device)
+    return x_t
+
+
 # # Evaluation
 
 plt.plot(range(len(epoch_mean_train_losses)), epoch_mean_train_losses, linestyle="dashed")
@@ -334,56 +367,25 @@ plt.show()
 expected_noise = torch.normal(torch.zeros(predicted_noise.shape), 1).to(device).cpu().numpy()
 plt.imshow(expected_noise, cmap="gray")
 plt.show()
-# -
 
-
-# -
-
-# # Sampling
 
 # +
-def denoising_process(images, beta, noise_predictor, simple_variance=False):
-    "sample image"
-    
-    images_size = images.shape
-    timesteps = beta.shape[0] - 1
-    alpha = 1 - beta
-    alpha_cum = torch.cumprod(alpha, dim=0)
-    if simple_variance:
-        variances = beta
-    else:
-        alpha_cum_t_minus_1 = torch.cat([torch.Tensor([0]), alpha_cum[:-1]], axis=0)
-        variances = (1-alpha_cum_t_minus_1)/(1-alpha_cum)
-        variances = variances * beta
-    
-    x_t = images
-    
-    for timestep in range(timesteps, 0, -1):
-        predicted_noise = noise_predictor(x_t, timestep)
-        z = torch.normal(torch.zeros(images_size), torch.ones(images_size))
-        if timestep == 1:
-          z = torch.zeros(images_size)
-        x_t = variances[timestep] * z + (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise) \
-          / torch.sqrt(alpha[timestep])     
-    return x_t
-
-amount_channels = 1
-test_images, test_labels = next(iter(test_loader)) 
-test_image = test_images[0] 
-test_label = test_labels[0] 
-
 def fake_noise_pred(image, timestep):
-    return torch.normal(torch.zeros_like(image), torch.ones_like(image))
+    return torch.normal(torch.zeros_like(image), torch.ones_like(image)).to(device)
 
-image_size = test_image.shape
-beta = torch.ones(10) * 0.15
+beta = torch.ones(10).to(device) * 0.15
 
-samples = denoising_process(torch.ones(test_images.shape), beta, fake_noise_pred)
+sample_images_size = [100, 1, 28, 28]
+sample_images = torch.ones(sample_images_size).to(device)
+samples = denoising_process(sample_images, beta, fake_noise_pred).to(device)
 
-assert samples.shape == test_images.shape
+assert samples.shape == sample_images.shape
 
 plt.subplot(1,2,1)
 plt.imshow(samples[0][0], cmap="gray")
 plt.subplot(1,2,2)
 plt.imshow(samples[1][0], cmap="gray")
 plt.show()
+# -
+
+# -
