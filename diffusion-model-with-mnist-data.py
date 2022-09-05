@@ -94,8 +94,10 @@ class Conv2dBlock(nn.Module):
         super(Conv2dBlock, self).__init__()
         self.layers = nn.Sequential(nn.Conv2d(amount_channels_input, amount_channels_output, 3, padding=1),
                                               nn.BatchNorm2d(amount_channels_output),
+                                              nn.ReLU(),
                                               nn.Conv2d(amount_channels_output, amount_channels_output, 3, padding=1),
-                                              nn.BatchNorm2d(amount_channels_output))
+                                              nn.BatchNorm2d(amount_channels_output),
+                                              nn.ReLU())
     
     def forward(self, x):
         return self.layers(x)
@@ -105,11 +107,14 @@ class EncoderBlock(nn.Module):
         super(EncoderBlock, self).__init__()
         self.conv_block = Conv2dBlock(amount_channels_input, amount_channels_output)
         self.downsampling_layer = nn.MaxPool2d(2)
+        self.relu = nn.ReLU()
         
     def forward(self, x):
         x = self.conv_block(x)
+        x = self.relu(x)
         skip_values = x
         x = self.downsampling_layer(x)
+        x = self.relu(x)
         return x, skip_values
 
     
@@ -118,38 +123,105 @@ class DecoderBlock(nn.Module):
         super(DecoderBlock, self).__init__()
         self.conv_block = Conv2dBlock(amount_channels_output * 2, amount_channels_output)
         self.upsampling_layer = nn.ConvTranspose2d(amount_channels_input, amount_channels_output, 2, 2)
+        self.relu = nn.ReLU()
         
     def forward(self, x, skip_values):
         x = self.upsampling_layer(x)
+        x = self.relu(x)
         x = torch.cat([x, skip_values], axis=1)
         x = self.conv_block(x)
+        x = self.relu(x)
         return x
     
 
 class NoisePredictionUnet(nn.Module):
-    def __init__(self, amount_channels):
+    def __init__(self, amounts_channels):
         super(NoisePredictionUnet, self).__init__()
-        amount_channels_with_timestep = amount_channels + 1
-        
-        layers = []
-        layers.append(EncoderBlock(amount_channels_with_timestep, amount_channels * 2))
-        layers.append(Conv2dBlock(amount_channels * 2, amount_channels * 4))
-        layers.append(DecoderBlock(amount_channels * 4, amount_channels * 2))
-        layers.append(nn.Conv2d(amount_channels * 2, amount_channels, 1))
+        encoder_blocks = []
+        decoder_blocks = []
+        layers_between = []
+        final_layers = []
+        self.divisor = 2 ** (len(amounts_channels) - 2)
+        for i, current_amount_channels in enumerate(amounts_channels):
+            next_amount_channels = amounts_channels[i + 1]
+            if i == 0:
+                final_layers.append(nn.Conv2d(next_amount_channels, current_amount_channels, 1))
+                final_layers.append(nn.Sigmoid())
+                
+                encoding_amount_channels_input = current_amount_channels + 1  # Due to the embedded timestep.
+                encoding_amount_channels_output = next_amount_channels
+                
+                assert encoding_amount_channels_input <= encoding_amount_channels_output
+                
+                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output)
+                encoder_blocks.append(encoder_block)
+                
+            elif i == len(amounts_channels) - 2:
+                layers_between.append(Conv2dBlock(current_amount_channels, next_amount_channels))
+                
+                decoding_amount_channels_input = next_amount_channels
+                decoding_amount_channels_output = current_amount_channels
+                
+                assert decoding_amount_channels_input >= decoding_amount_channels_output
+                
+                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output)
+                decoder_blocks.insert(0, decoder_block)
+                break
+            else:                
+                encoding_amount_channels_input = current_amount_channels
+                encoding_amount_channels_output = next_amount_channels
+                
+                decoding_amount_channels_input = next_amount_channels
+                decoding_amount_channels_output = current_amount_channels
+                
+                if i == 0:
+                    encoding_amount_channels_input += 1
+                
+                assert encoding_amount_channels_input <= encoding_amount_channels_output
+                assert decoding_amount_channels_input >= decoding_amount_channels_output
+                
+                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output)
+                encoder_blocks.append(encoder_block)
+                
+                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output)
+                decoder_blocks.insert(0, decoder_block)
+                
+        layers = encoder_blocks + layers_between + decoder_blocks + final_layers
         
         self.module_list = nn.ModuleList(layers)
-        self.relu = nn.ReLU()
-        self.sigmoid = nn.Sigmoid()
+    
+    def apply_padding(self, x):
+        pad_width = self.divisor - x.shape[3] % self.divisor
+        pad_height = self.divisor - x.shape[2] % self.divisor
         
+        pad_left = int(pad_width / 2)
+        pad_right = pad_width - pad_left
+        
+        pad_up = int(pad_height / 2)
+        pad_down = pad_height - pad_up
+        padding = (pad_left, pad_right, pad_up, pad_down)
+        x = torch.nn.functional.pad(x, padding, mode='constant', value=0)
+        return x, padding
+        
+    def undo_padding(self, x, padding):
+        (pad_left, pad_right, pad_up, pad_down) = padding
+        return x[:, :, pad_left:-pad_right, pad_up:-pad_down]
+    
     def forward(self, x):
-        x, skip_values = self.module_list[0](x)
-        x = self.relu(x)
-        x = self.module_list[1](x)
-        x = self.relu(x)
-        x = self.module_list[2](x, skip_values)
-        x = self.relu(x)
-        x = self.module_list[3](x)
-        x = self.sigmoid(x)
+        skip_values = []
+        x, padding = self.apply_padding(x)
+        for layer in self.module_list:
+            if isinstance(layer, EncoderBlock):
+                x, skip_value = layer(x)
+                skip_values.append(skip_value)
+            elif isinstance(layer, DecoderBlock):
+                skip_value = skip_values.pop()
+                x = layer(x, skip_value)
+            else:
+                x = layer(x)
+                
+        x = self.undo_padding(x, padding)
+        assert len(skip_values) == 0
         return x
 
 
@@ -167,7 +239,7 @@ batch_size = 60
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False)
 test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
 
-model = NoisePredictionUnet(1).to(device)
+model = NoisePredictionUnet([1, 16, 32, 64, 128, 256]).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
 
