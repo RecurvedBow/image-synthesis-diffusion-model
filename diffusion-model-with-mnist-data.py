@@ -1,5 +1,3 @@
-# The module jupytext is used to treat this .py file as a jupyter notebook file. To keep the output after every session, go to "File" -> "Jupytext" -> "Pair Notebook with ipynb document". This generates a file PY_FILENAME.ipynb.
-
 # # Imports
 
 import numpy as np
@@ -42,7 +40,7 @@ def plot_images(images):
     plt.show()
 
 
-plot_images(train_image_data)
+#plot_images(train_image_data)
 
 assert (train_labels[:9] == np.array([5, 0, 4, 1, 9, 2, 1, 3, 1])).all()
 
@@ -57,17 +55,17 @@ def add_noise(image, beta):
     return noisy_image
 
 
-variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
-noisy_images = add_noise(train_dataset.data, variances)
+#variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+#noisy_images = add_noise(train_dataset.data, variances)
 #plot_images(noisy_images)
 
-variances = torch.ones(900) * 0.015
-image = train_dataset.data[0]
-noisy_images = torch.zeros([9, image.shape[0], image.shape[1]])
-for i in range(9):
-    noisy_image = add_noise(image, variances[:i * 100 + 1])
-    noisy_images[i] = noisy_image
-plot_images(noisy_images)
+#variances = torch.ones(900) * 0.015
+#image = train_dataset.data[0]
+#noisy_images = torch.zeros([9, image.shape[0], image.shape[1]])
+#for i in range(9):
+#    noisy_image = add_noise(image, variances[:i * 100 + 1])
+#    noisy_images[i] = noisy_image
+#plot_images(noisy_images)
 
 
 # # Noise Prediction Model Implementation
@@ -148,12 +146,12 @@ batch_size = 100
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False)
 test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
 
-model = NoisePredictionUnet(1)
-for data, labels in train_loader:
-    timestep = 3
-    predicted_noises = model(data, timestep)
-    assert predicted_noises.shape == data.shape
-    break
+#model = NoisePredictionUnet(1)
+#for data, labels in train_loader:
+#    timestep = 3
+#    predicted_noises = model(data, timestep)
+#    assert predicted_noises.shape == data.shape
+#    break
 
 # +
 variances = torch.ones(1000) * 0.015
@@ -172,32 +170,31 @@ for epoch_index in range(epochs):
 # # Sampling
 
 # +
-def sample_image(image_size, beta, noise_predictor, simple_variance=False):
+def sample_image(image, beta, noise_predictor, simple_variance=False):
     "sample image"
     
+    image_size = image.shape
     timesteps = beta.shape[0] - 1
     alpha = 1 - beta
     alpha_cum = torch.cumprod(alpha, dim=0)
     if simple_variance:
         variances = beta
     else:
-        alpha_cum_t = torch.cat(alpha_cum, torch.Tensor([0]))
         alpha_cum_t_minus_1 = torch.cat(torch.Tensor([0]), alpha_cum)
-        variances = (1-alpha_cum_t_minus_1)/(1-alpha_cum_t)
+        variances = (1-alpha_cum_t_minus_1)/(1-alpha_cum)
         variances = variances[:-1] * beta
     
     x_t = torch.normal(torch.zeros(image_size), torch.ones(image_size))
     
-    for timestep in range(timesteps, -1, -1):
+    for timestep in range(timesteps, 0, -1):
         predicted_noise = noise_predictor(x_t, timestep)
-        z = torch.normal(torch.zeros(image_size), torch.ones(image_size))
-        
-        x_t = variances[timestep] * z + (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise)
-        
+        z = torch.normal(torch.zeros(image_size), torch.ones(image_size))        
+        x_t = variances[timestep] * z + (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise) / torch.sqrt(alpha[timestep])
+    x_t = (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise) / torch.sqrt(alpha[timestep])        
     return x_t
 
 amount_channels = 1
-test_images, test_labels = next(iter(train_loader)) 
+test_images, test_labels = next(iter(test_loader)) 
 test_image = test_images[0] 
 test_label = test_labels[0] 
 
@@ -207,13 +204,7 @@ def fake_noise_pred(image, timestep):
 image_size = test_image.shape
 beta = torch.ones(10)
 
-sample = sample_image(image_size, beta, fake_noise_pred, simple_variance=True)
+sample = sample_image(torch.ones(image_size), beta, fake_noise_pred, simple_variance=True)
 
-print(sample)
-    
-    
-    
-    
-    
-    
-    
+plt.imshow(sample[0], cmap="gray")
+plt.show
