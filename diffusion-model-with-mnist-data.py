@@ -1,3 +1,6 @@
+# The module jupytext is used to treat this .py file as a jupyter notebook file. To keep the output after every session, go to "File" -> "Jupytext" -> "Pair Notebook with ipynb document". This generates a file PY_FILENAME.ipynb.
+
+
 # # Imports
 
 import numpy as np
