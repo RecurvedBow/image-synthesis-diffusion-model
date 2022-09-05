@@ -40,7 +40,7 @@ def plot_images(images):
     plt.show()
 
 
-#plot_images(train_image_data)
+plot_images(train_image_data)
 
 assert (train_labels[:9] == np.array([5, 0, 4, 1, 9, 2, 1, 3, 1])).all()
 
@@ -55,17 +55,17 @@ def add_noise(image, beta):
     return noisy_image
 
 
-#variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
-#noisy_images = add_noise(train_dataset.data, variances)
-#plot_images(noisy_images)
+variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+noisy_images = add_noise(train_dataset.data, variances)
+plot_images(noisy_images)
 
-#variances = torch.ones(900) * 0.015
-#image = train_dataset.data[0]
-#noisy_images = torch.zeros([9, image.shape[0], image.shape[1]])
-#for i in range(9):
-#    noisy_image = add_noise(image, variances[:i * 100 + 1])
-#    noisy_images[i] = noisy_image
-#plot_images(noisy_images)
+variances = torch.ones(900) * 0.015
+image = train_dataset.data[0]
+noisy_images = torch.zeros([9, image.shape[0], image.shape[1]])
+for i in range(9):
+    noisy_image = add_noise(image, variances[:i * 100 + 1])
+    noisy_images[i] = noisy_image
+plot_images(noisy_images)
 
 
 # # Noise Prediction Model Implementation
@@ -146,12 +146,12 @@ batch_size = 100
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False)
 test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
 
-#model = NoisePredictionUnet(1)
-#for data, labels in train_loader:
-#    timestep = 3
-#    predicted_noises = model(data, timestep)
-#    assert predicted_noises.shape == data.shape
-#    break
+model = NoisePredictionUnet(1)
+for data, labels in train_loader:
+    timestep = 3
+    predicted_noises = model(data, timestep)
+    assert predicted_noises.shape == data.shape
+    break
 
 # +
 variances = torch.ones(1000) * 0.015
@@ -170,10 +170,10 @@ for epoch_index in range(epochs):
 # # Sampling
 
 # +
-def denoising_process(image, beta, noise_predictor, simple_variance=False):
+def denoising_process(images, beta, noise_predictor, simple_variance=False):
     "sample image"
     
-    image_size = image.shape
+    images_size = images.shape
     timesteps = beta.shape[0] - 1
     alpha = 1 - beta
     alpha_cum = torch.cumprod(alpha, dim=0)
@@ -184,13 +184,13 @@ def denoising_process(image, beta, noise_predictor, simple_variance=False):
         variances = (1-alpha_cum_t_minus_1)/(1-alpha_cum)
         variances = variances * beta
     
-    x_t = image
+    x_t = images
     
     for timestep in range(timesteps, 0, -1):
         predicted_noise = noise_predictor(x_t, timestep)
-        z = torch.normal(torch.zeros(image_size), torch.ones(image_size))
+        z = torch.normal(torch.zeros(images_size), torch.ones(images_size))
         if timestep == 1:
-          z = torch.zeros(image_size)
+          z = torch.zeros(images_size)
         x_t = variances[timestep] * z + (x_t - (1-alpha[timestep])/torch.sqrt(1-alpha_cum[timestep])*predicted_noise) \
           / torch.sqrt(alpha[timestep])     
     return x_t
