@@ -24,14 +24,14 @@ else:
     print("Using CPU.")
     device = "cpu"
 
-"""# Load MNIST Dataset"""
+# # Load MNIST Dataset
 
 folder_path = "./data/mnist"
 
 train_dataset = datasets.MNIST(root=folder_path, train=True, transform=transforms.ToTensor(), download=True)
 test_dataset = datasets.MNIST(root=folder_path, train=False, transform=transforms.ToTensor(), download=True)
 
-"""# Data Exploration"""
+# # Data Exploration
 
 train_image_data = train_dataset.data.numpy()
 train_labels = train_dataset.targets.numpy()
@@ -55,7 +55,7 @@ plot_images(train_image_data)
 
 assert (train_labels[:9] == np.array([5, 0, 4, 1, 9, 2, 1, 3, 1])).all()
 
-"""# Forward Noise Process"""
+# # Forward Noise Process
 
 def add_noise(image, beta):
     alpha = 1 - beta
@@ -81,9 +81,9 @@ for i in range(9):
     noisy_images[i] = noisy_image
 plot_images(noisy_images)
 
-"""# Noise Prediction Model Implementation
-Uses a UNET architecture to predict the noise of given noisy images.
-"""
+# # Noise Prediction Model Implementation
+#Uses a UNET architecture to predict the noise of given noisy images.
+
 
 class Conv2dBlock(nn.Module):
     def __init__(self, amount_channels_input, amount_channels_output):
@@ -225,7 +225,7 @@ def get_loss(predicted_noise):
     expected_noise = torch.normal(torch.zeros(predicted_noise.shape), 1).to(device)
     return mse_loss(predicted_noise, expected_noise).to(device)
 
-"""# Training"""
+# # Training
 
 batch_size = 60
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False)
@@ -297,7 +297,7 @@ for epoch_index in range(epochs):
                 amount_epochs_cooldown = max_amount_epochs_cooldown
                 scheduler.step()
 
-"""# Sampling"""
+# # Sampling
 
 def denoising_process(images, beta, noise_predictor, simple_variance=False):
     "sample image"
@@ -329,7 +329,7 @@ def denoising_process(images, beta, noise_predictor, simple_variance=False):
             / torch.sqrt(alpha[timestep])).to(device)
     return x_t
 
-"""# Evaluation"""
+# # Evaluation
 
 plt.plot(range(len(epoch_mean_train_losses)), epoch_mean_train_losses, linestyle="dashed")
 plt.xlabel("Mean Training Loss")
@@ -369,7 +369,7 @@ plt.subplot(1,2,2)
 plt.imshow(samples[1][0], cmap="gray")
 plt.show()
 
-"""# FID & Inception Score"""
+# # FID & Inception Score
 
 !pip install pytorch-ignite
 
