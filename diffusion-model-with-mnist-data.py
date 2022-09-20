@@ -108,7 +108,7 @@ class ResidualConv2dBlock(nn.Module):
                                     nn.GroupNorm(2, amount_channels_output),
                                     nn.ReLU())
         self.residual_layer = nn.Conv2d(amount_channels_input, amount_channels_output, 1)
-    
+
     def forward(self, x):
         conv_output = self.layers(x)
         residual_output = self.residual_layer(x)
@@ -124,26 +124,26 @@ class ApplyAttentionBlock(nn.Module):
         self.attention_conv2d = nn.Conv2d(self.amount_channels_attention, amount_channels, 1)
         self.relu = nn.ReLU()
         self.softmax = nn.Softmax(dim=-1)
-        
+
     def forward(self, x):
         residual = x
         original_shape = x.shape
-        
+
         query = self.query_conv2d(x).flatten(start_dim=-2, end_dim=-1).permute(0, 2, 1)
         keys = self.keys_conv2d(x).flatten(start_dim=-2, end_dim=-1)
         values = self.values_conv2d(x).flatten(start_dim=-2, end_dim=-1)
-        
+
         x = torch.matmul(query, keys)
         x = self.softmax(x)
         x = x.permute(0, 2, 1)
         x = torch.matmul(values, x)
-        
+
         x = x.permute(0, 2, 1).reshape(original_shape[0], self.amount_channels_attention, original_shape[2], original_shape[3])
         x = self.attention_conv2d(x)
         x = self.relu(x)
         x = x + residual
         return x
-    
+
 class UnetConv2dBlock(nn.Module):
     def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, use_attention=False):
         super(UnetConv2dBlock, self).__init__()
@@ -156,7 +156,7 @@ class UnetConv2dBlock(nn.Module):
         blocks.append(ResidualConv2dBlock(amount_channels_output, amount_channels_output))
         self.residual_conv_blocks = nn.Sequential(*blocks)
         self.relu = nn.ReLU()
-        
+
     def forward(self, x, t):
         t = self.time_emb_layer(t)
         t = self.relu(t)
@@ -178,7 +178,7 @@ class EncoderBlock(nn.Module):
         x = self.downsampling_layer(x)
         x = self.relu(x)
         return x, skip_values
-    
+
 class DecoderBlock(nn.Module):
     def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, use_attention=False):
         super(DecoderBlock, self).__init__()
@@ -192,7 +192,7 @@ class DecoderBlock(nn.Module):
         x = torch.cat([x, skip_values], axis=1)
         x = self.conv_block(x, t)
         return x
-    
+
 class SinusoidalPositionEmbeddingLayer(nn.Module):
     def __init__(self, time_emb_dim):
         super(SinusoidalPositionEmbeddingLayer, self).__init__()
@@ -206,23 +206,23 @@ class SinusoidalPositionEmbeddingLayer(nn.Module):
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1).to(device)
 
         return embeddings
-        
+
 class NoisePredictionUnet(nn.Module):
     def __init__(self, amounts_channels):
         super(NoisePredictionUnet, self).__init__()
         self.time_emb_dim = 32
-        
+
         encoder_blocks = []
         decoder_blocks = []
         layers_between = []
         final_layers = []
         self.divisor = 2 ** (len(amounts_channels) - 2)
-        
+
         for i, current_amount_channels in enumerate(amounts_channels):
             next_amount_channels = amounts_channels[i + 1]
             if i == 0:
                 final_layers.append(nn.Conv2d(next_amount_channels, current_amount_channels, 1))
-                
+
                 encoding_amount_channels_input = current_amount_channels
                 encoding_amount_channels_output = next_amount_channels
                 
@@ -248,7 +248,7 @@ class NoisePredictionUnet(nn.Module):
                 
                 decoding_amount_channels_input = next_amount_channels
                 decoding_amount_channels_output = current_amount_channels
-                
+
                 assert encoding_amount_channels_input <= encoding_amount_channels_output
                 assert decoding_amount_channels_input >= decoding_amount_channels_output
                 
@@ -264,7 +264,7 @@ class NoisePredictionUnet(nn.Module):
         self.time_emb_mlp = nn.Sequential(SinusoidalPositionEmbeddingLayer(self.time_emb_dim),
                                             nn.Linear(self.time_emb_dim, self.time_emb_dim),
                                             nn.ReLU())
-    
+
     def apply_padding(self, x):
         pad_width = self.divisor - x.shape[3] % self.divisor
         pad_height = self.divisor - x.shape[2] % self.divisor
@@ -365,10 +365,10 @@ def get_training_data_single_timestep(images, variances):
     sampled_timestep = np.random.randint(1, variances.shape[0] + 1)
     selected_variances = variances[:sampled_timestep]
     alpha_cum = torch.prod(1 - selected_variances, dim=0)
-    
+
     expected_noise = torch.randn(images.shape).to(device)
     noisy_images = expected_noise * (1 - alpha_cum) + torch.sqrt(alpha_cum) * images
-    
+
     timesteps = torch.ones(images.shape[0]).int().to(device) * sampled_timestep
     return noisy_images, timesteps, expected_noise
 
@@ -376,13 +376,13 @@ def get_training_data(images, variances):
     batch_size = images.shape[0]
     timesteps = torch.Tensor(range(1, variances.shape[0] + 1)).int().to(device)
     alphas_cum = torch.cumprod(1 - variances, dim=0).to(device)
-    
+
     timesteps = torch.repeat_interleave(timesteps, images.shape[0], dim=0).to(device)
     image_size = images.shape[2] * images.shape[3]
     alphas_cum = torch.repeat_interleave(alphas_cum, image_size, dim=0).to(device)
     images = torch.repeat_interleave(images, variances.shape[0], dim=0).to(device)
     alphas_cum = alphas_cum.repeat(batch_size).reshape(images.shape).to(device)
-    
+
     expected_noise = torch.randn(images.shape).to(device)
     noisy_images = expected_noise * (1 - alphas_cum) + torch.sqrt(alphas_cum) * images
 
@@ -392,19 +392,19 @@ def get_training_data(images, variances):
 # +
 def get_test_loss():
     mean_test_loss = 0
-    
+
     with torch.no_grad():
         batch_test_losses = []
         for batch_index, test_data_batch in enumerate(test_loader):
             images, _ = test_data_batch
-            images = images.to(device) 
+            images = images.to(device)
             noisy_images, timesteps, expected_noise = get_training_data_single_timestep(images, variances)
             predicted_noise = model(noisy_images, timesteps)
             loss = get_loss(predicted_noise, expected_noise)
             batch_test_losses.append(loss.item())
             if batch_index % 100 == 0:
                 print("\r", end=f"Batch {batch_index + 1} | {amount_batches_test} - Test Loss: {batch_test_losses[-1]}")
-        
+
         mean_test_loss = np.mean(batch_test_losses)
         print("\r", end=f"Average Test Loss: {mean_test_loss}")
         print("")
@@ -412,7 +412,7 @@ def get_test_loss():
 
 def evaluate_model_results():
     data_batch, _ = next(iter(test_loader))
-    
+
     if data_batch.shape[0] > 9:
         data_batch = data_batch[:9]
 
@@ -442,7 +442,7 @@ for i, image in enumerate(sample_images):
     plt.xticks([])
     plt.yticks([])
     plt.imshow(image, cmap="gray")
-    
+
     plt.subplot(2, amount_images, i + amount_images + 1)
     plt.xticks([])
     plt.yticks([])
@@ -460,11 +460,11 @@ test_losses = []
 for epoch_index in range(epochs):
     if epoch_index % 10 == 0:
         evaluate_model_results()
-    
+
     batch_train_losses = []
     for batch_index, train_data_batch in enumerate(train_loader):
         start_time_batch = time.time()
-        
+
         images, _ = train_data_batch
         images = images.to(device)
         noisy_images, timesteps, expected_noise = get_training_data_single_timestep(images, variances)
@@ -475,7 +475,7 @@ for epoch_index in range(epochs):
         loss.backward()
         optimizer.step()
         del images, noisy_images, timesteps, expected_noise, predicted_noise, loss
-        
+
         if batch_index % 100 == 0:
             end_time = time.time()
             batch_time_delta = end_time - start_time_batch
@@ -485,16 +485,16 @@ for epoch_index in range(epochs):
             time_delta_formatted = datetime.timedelta(seconds=estimated_remaining_time)
 
             print("\r", end=f"({time_delta_formatted}) Batch {batch_index + 1} | {amount_batches_train} - Training Loss: {batch_train_losses[-1]}")
-    
+
     scheduler.step()
-    
+
     mean_train_loss = np.mean(batch_train_losses)
     print(f"\rEpoch {epoch_index + 1} - Average Training Loss: {mean_train_loss}")
     train_losses.append(mean_train_loss)
-    
+
     mean_test_loss = get_test_loss()
     test_losses.append(mean_test_loss)
-    
+
 evaluate_model_results()
 # -
 
@@ -511,7 +511,7 @@ def plot_model_results(image, amount_rows=10):
     images = image.unsqueeze(0).to(device)
     amount_variances = variances.shape[0]
     selected_timesteps = np.linspace(1, amount_variances, amount_rows, dtype=int)
-    
+
     for i, timestep in enumerate(selected_timesteps):
         selected_variances = variances[:timestep]
         plt.subplot(amount_rows, 2, 2 * i + 1)
@@ -520,7 +520,7 @@ def plot_model_results(image, amount_rows=10):
         noisy_images = add_noise(images, selected_variances).to(device)
         noisy_image_to_show = noisy_images.cpu()[0][0]
         plt.imshow(noisy_image_to_show, cmap="gray")
-        
+
         plt.subplot(amount_rows, 2, 2 * i + 2)
         plt.xticks([])
         plt.yticks([])
@@ -567,4 +567,81 @@ samples = denoising_process(sample_images, variances, model).cpu().permute(0, 2,
 plot_images(samples)
 # -
 
-# -
+# # FID & Inception Score
+
+from ignite.engine import Engine, Events
+from ignite.metrics import InceptionScore, FID
+
+def fid_with_noise_level(batch, noise_level):
+    def process_function_fid(engine, data_batch):
+        if len(data_batch.shape) == 3: data_batch = data_batch[None,:,:,:]
+        noisy_images = data_batch + torch.rand(data_batch.shape) * noise_level
+        return noisy_images, data_batch
+
+    engine_fid = Engine(process_function_fid)
+    fid_scores = []
+
+    fid = FID()
+    fid.attach(engine_fid, "fid")
+
+    @engine_fid.on(Events.EPOCH_COMPLETED)
+    def on_epoch_completed(engine):
+        metrics = engine.state.metrics
+
+        fid_score = metrics["fid"]
+        fid_scores.append(fid_score)
+
+    results = engine_fid.run(batch, max_epochs=5)
+
+    return fid_scores
+
+def is_with_noise_level(batch, noise_level):
+    def process_function_is(engine, data_batch):
+        if len(data_batch.shape) == 3: data_batch = data_batch[None,:,:,:]
+        return data_batch
+
+    engine_is = Engine(process_function_is)
+    is_scores = []
+
+    inception_score = InceptionScore()
+    inception_score.attach(engine_is, "is")
+
+    @engine_is.on(Events.EPOCH_COMPLETED)
+    def on_epoch_completed(engine):
+        metrics = engine.state.metrics
+
+        is_score = metrics["is"]
+        is_scores.append(is_score)
+
+    results = engine_is.run(batch, max_epochs=5)
+
+    return is_scores
+
+def metrics_with_noise_levels(batch, noise_levels):
+    # give images 3 channels if they only have 1:
+    if len(batch.shape) == 4 and batch.shape[1] == 1:
+        batch_shape = batch.shape
+        batch_three_channels = torch.zeros(batch_shape[0], 3, batch_shape[2], batch_shape[3])
+
+        batch_three_channels[:,0,:,:] = evaluation_batch[:,0,:,:]
+        batch_three_channels[:,1,:,:] = evaluation_batch[:,0,:,:]
+        batch_three_channels[:,2,:,:] = evaluation_batch[:,0,:,:]
+
+        batch = torch.FloatTensor(batch_three_channels)
+
+        # Resize images to 299x299
+        transform = transforms.Resize(size = (299,299))
+        batch = transform(batch)
+
+    for noise in noise_levels:
+        fid_scores = fid_with_noise_level(batch, noise)
+        is_scores = is_with_noise_level(batch, noise)
+
+        print(f"Noise: {noise}")
+        print(f"   FID: {np.mean(fid_scores):.3e} +- {np.std(fid_scores):.3e}")
+        print(f"   IS:  {np.mean(is_scores):.3e}  +- {np.std(is_scores):.3e}")
+
+noises = [0.001, 0.1]
+evaluation_batch, _ = next(iter(train_loader))
+
+metrics_with_noise_levels(evaluation_batch, noises)
