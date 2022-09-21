@@ -11,6 +11,8 @@ import torch.nn as nn
 import math
 import time
 import datetime
+from ignite.engine import Engine, Events
+from ignite.metrics import InceptionScore, FID
 
 if torch.cuda.is_available():
     print("Using GPU.")
@@ -60,27 +62,20 @@ assert (train_labels[:9] == np.array([5, 0, 4, 1, 9, 2, 1, 3, 1])).all()
 
 # # Forward Noise Process
 
-# +
-def add_noise(image, beta):
+def add_noise(images, beta):
     alpha = 1 - beta
     alpha_cum = torch.prod(alpha)
-    return apply_noise(image, alpha_cum)
+    noise = torch.randn(images.shape).to(device)
+    noisy_images = noise * (1 - alpha_cum) + torch.sqrt(alpha_cum) * images
+    noisy_images = noisy_images.to(device)
+    return noisy_images
 
-def apply_noise(image, alpha_cum):
-    random_array = torch.randn(image.shape).to(device)
-    noisy_image = random_array * (1 - alpha_cum) + torch.sqrt(alpha_cum) * image
-    noisy_image = noisy_image.to(device)
-    return noisy_image
-
-
-# -
 
 variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]).to(device)
 noisy_images = add_noise(train_dataset.data.to(device), variances).cpu()
 plot_images(noisy_images)
 
-variances = torch.Tensor(np.linspace(1e-4, 1e-2, 1000)).to(device)
-variances = variances[:500]
+variances = torch.Tensor(np.linspace(1e-4, 2e-2, 1000)).to(device)
 
 image = train_dataset.data[0].numpy()
 transformer = transforms.ToTensor()
@@ -321,7 +316,7 @@ amount_batches_test = round(np.ceil(test_dataset.data.shape[0] / batch_size))
 
 model = NoisePredictionUnet([1, 2, 4, 8]).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.1)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
 
 
 # ## Sampling
@@ -392,7 +387,6 @@ def get_training_data(images, variances):
 # +
 def get_test_loss():
     mean_test_loss = 0
-
     with torch.no_grad():
         batch_test_losses = []
         for batch_index, test_data_batch in enumerate(test_loader):
@@ -402,11 +396,8 @@ def get_test_loss():
             predicted_noise = model(noisy_images, timesteps)
             loss = get_loss(predicted_noise, expected_noise)
             batch_test_losses.append(loss.item())
-            if batch_index % 100 == 0:
-                print("\r", end=f"Batch {batch_index + 1} | {amount_batches_test} - Test Loss: {batch_test_losses[-1]}")
-
         mean_test_loss = np.mean(batch_test_losses)
-        print("\r", end=f"Average Test Loss: {mean_test_loss}")
+        print(f"Average Test Loss: {mean_test_loss}")
         print("")
     return mean_test_loss
 
@@ -452,7 +443,7 @@ plt.tight_layout()
 plt.show()
 
 # +
-epochs = 200
+epochs = 60
 
 train_losses = []
 test_losses = []
@@ -460,7 +451,7 @@ test_losses = []
 for epoch_index in range(epochs):
     if epoch_index % 10 == 0:
         evaluate_model_results()
-
+        
     batch_train_losses = []
     for batch_index, train_data_batch in enumerate(train_loader):
         start_time_batch = time.time()
@@ -484,12 +475,14 @@ for epoch_index in range(epochs):
             estimated_remaining_time = round(estimated_remaining_time)
             time_delta_formatted = datetime.timedelta(seconds=estimated_remaining_time)
 
-            print("\r", end=f"({time_delta_formatted}) Batch {batch_index + 1} | {amount_batches_train} - Training Loss: {batch_train_losses[-1]}")
+            print("\r", end=f"Batch {batch_index + 1} | {amount_batches_train} ({time_delta_formatted})")
 
     scheduler.step()
 
     mean_train_loss = np.mean(batch_train_losses)
-    print(f"\rEpoch {epoch_index + 1} - Average Training Loss: {mean_train_loss}")
+    print("\r                                                                                          ")
+    print(f"Epoch {epoch_index + 1}:")
+    print(f"Average Training Loss: {mean_train_loss}")
     train_losses.append(mean_train_loss)
 
     mean_test_loss = get_test_loss()
@@ -561,87 +554,55 @@ plot_images(denoised_images.cpu().reshape(-1, 28, 28))
 
 # +
 sample_images_size = [100, 1, 28, 28]
-sample_images = torch.ones(sample_images_size).to(device)
+sample_images = torch.randn(sample_images_size).to(device)
 samples = denoising_process(sample_images, variances, model).cpu().permute(0, 2, 3, 1).numpy()
 
 plot_images(samples)
+
+
 # -
+# ## FID & Inception Score
 
-# # FID & Inception Score
+def get_image_generation_metrics():
+    test_data = test_dataset.data
+    
+    if len(test_data.shape) == 3:
+        test_data = test_data.reshape(test_data.shape[0], 1, test_data.shape[1], test_data.shape[2])
+    
+    data_loader = torch.utils.data.DataLoader(test_data, batch_size=batch_size, shuffle=False)
+    
+    def get_generated_and_actual_images(engine, data_batch):
+        with torch.no_grad():
+            sample_images_size = data_batch.shape
+            sample_images = torch.randn(sample_images_size).to(device)
+            samples = denoising_process(sample_images, variances, model).cpu()
+        
+            samples = torch.cat([samples, samples, samples], dim=1)
+            data_batch = torch.cat([data_batch, data_batch, data_batch], dim=1)
+            
+            # Resize images to 299x299
+            transform = transforms.Resize(size = (299, 299))
+            samples = transform(samples)
+            data_batch = transform(data_batch)
+        return samples, data_batch
 
-from ignite.engine import Engine, Events
-from ignite.metrics import InceptionScore, FID
+    engine = Engine(get_generated_and_actual_images)
+    
+    fid = FID(device=device)
+    fid.attach(engine, "fid")
+    
+    inception_score = InceptionScore(device=device, output_transform=lambda output: output[0])
+    inception_score.attach(engine, "is")
+    
+    engine.run(data_loader, max_epochs=1)
+    metrics = engine.state.metrics
 
-def fid_with_noise_level(batch, noise_level):
-    def process_function_fid(engine, data_batch):
-        if len(data_batch.shape) == 3: data_batch = data_batch[None,:,:,:]
-        noisy_images = data_batch + torch.rand(data_batch.shape) * noise_level
-        return noisy_images, data_batch
+    fid_score = metrics["fid"]
+    is_score = metrics["is"]
+    
+    return fid_score, is_score
 
-    engine_fid = Engine(process_function_fid)
-    fid_scores = []
+fid_score, is_score = get_image_generation_metrics()
+print(f"   FID: {fid_score:.3e}")
+print(f"   IS:  {is_score:.3e}")
 
-    fid = FID()
-    fid.attach(engine_fid, "fid")
-
-    @engine_fid.on(Events.EPOCH_COMPLETED)
-    def on_epoch_completed(engine):
-        metrics = engine.state.metrics
-
-        fid_score = metrics["fid"]
-        fid_scores.append(fid_score)
-
-    results = engine_fid.run(batch, max_epochs=5)
-
-    return fid_scores
-
-def is_with_noise_level(batch, noise_level):
-    def process_function_is(engine, data_batch):
-        if len(data_batch.shape) == 3: data_batch = data_batch[None,:,:,:]
-        return data_batch
-
-    engine_is = Engine(process_function_is)
-    is_scores = []
-
-    inception_score = InceptionScore()
-    inception_score.attach(engine_is, "is")
-
-    @engine_is.on(Events.EPOCH_COMPLETED)
-    def on_epoch_completed(engine):
-        metrics = engine.state.metrics
-
-        is_score = metrics["is"]
-        is_scores.append(is_score)
-
-    results = engine_is.run(batch, max_epochs=5)
-
-    return is_scores
-
-def metrics_with_noise_levels(batch, noise_levels):
-    # give images 3 channels if they only have 1:
-    if len(batch.shape) == 4 and batch.shape[1] == 1:
-        batch_shape = batch.shape
-        batch_three_channels = torch.zeros(batch_shape[0], 3, batch_shape[2], batch_shape[3])
-
-        batch_three_channels[:,0,:,:] = evaluation_batch[:,0,:,:]
-        batch_three_channels[:,1,:,:] = evaluation_batch[:,0,:,:]
-        batch_three_channels[:,2,:,:] = evaluation_batch[:,0,:,:]
-
-        batch = torch.FloatTensor(batch_three_channels)
-
-        # Resize images to 299x299
-        transform = transforms.Resize(size = (299,299))
-        batch = transform(batch)
-
-    for noise in noise_levels:
-        fid_scores = fid_with_noise_level(batch, noise)
-        is_scores = is_with_noise_level(batch, noise)
-
-        print(f"Noise: {noise}")
-        print(f"   FID: {np.mean(fid_scores):.3e} +- {np.std(fid_scores):.3e}")
-        print(f"   IS:  {np.mean(is_scores):.3e}  +- {np.std(is_scores):.3e}")
-
-noises = [0.001, 0.1]
-evaluation_batch, _ = next(iter(train_loader))
-
-metrics_with_noise_levels(evaluation_batch, noises)
