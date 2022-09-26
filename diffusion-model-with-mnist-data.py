@@ -93,10 +93,25 @@ plot_images(noisy_images.permute(0, 2, 3, 1).numpy())
 # Uses a UNET architecture to predict the noise of given noisy images.
 
 # +
+class MNISTConditionalEmbeddingLayer(nn.Module):
+    def __init__(self, cond_emb_dim):
+        super(MNISTConditionalEmbeddingLayer, self).__init__()
+        self.cond_emb_dim = cond_emb_dim
+        self.amount_unique_classes = 10
+        self.linear_layer = nn.Linear(self.amount_unique_classes, self.cond_emb_dim)
+        self.relu = nn.ReLU()
+        
+    def forward(self, c):
+        c = nn.functional.one_hot(c, self.amount_unique_classes).float().to(device)
+        c = self.linear_layer(c)
+        c = self.relu(c)
+        return c
+        
+        
 class ResidualConv2dBlock(nn.Module):
-    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim):
+    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim):
         super(ResidualConv2dBlock, self).__init__()
-        self.time_emb_layer = nn.Sequential(nn.Linear(time_emb_dim, amount_channels_input),
+        self.time_emb_mlp = nn.Sequential(nn.Linear(time_emb_dim, amount_channels_input),
                                             nn.ReLU())
         self.layers = nn.Sequential(nn.Conv2d(amount_channels_input, amount_channels_output, 3, padding=1),
                                     nn.GroupNorm(2, amount_channels_output),
@@ -105,11 +120,19 @@ class ResidualConv2dBlock(nn.Module):
                                     nn.GroupNorm(2, amount_channels_output),
                                     nn.ReLU())
         self.residual_layer = nn.Conv2d(amount_channels_input, amount_channels_output, 1)
+        self.cond_emb_mlp = nn.Sequential(nn.Linear(cond_emb_dim, amount_channels_input),
+                                            nn.ReLU())
 
-    def forward(self, x, t):
-        t = self.time_emb_layer(t)
+    def forward(self, x, t, c):
+        t = self.time_emb_mlp(t)
         t = t[(..., ) + (None, ) * 2]
         x = x + t
+        
+        if c is not None:
+            c = self.cond_emb_mlp(c)
+            c = c[(..., ) + (None, ) * 2]
+            x = x + c
+            
         conv_output = self.layers(x)
         residual_output = self.residual_layer(x)
         return conv_output + residual_output
@@ -148,49 +171,48 @@ class ApplyAttentionBlock(nn.Module):
         return x
 
 class UnetConv2dBlock(nn.Module):
-    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, use_attention=False):
+    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention=False):
         super(UnetConv2dBlock, self).__init__()
-        self.block1 = ResidualConv2dBlock(amount_channels_input, amount_channels_output, time_emb_dim)
-        self.block2 = ResidualConv2dBlock(amount_channels_output, amount_channels_output, time_emb_dim)
+        self.block1 = ResidualConv2dBlock(amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim)
+        self.block2 = ResidualConv2dBlock(amount_channels_output, amount_channels_output, time_emb_dim, cond_emb_dim)
         self.attention_block = None
         if use_attention:
-            # amount_channels_attention = int(np.sqrt(amount_channels_output))
             amount_channels_attention = amount_channels_output
             self.attention_block = ApplyAttentionBlock(amount_channels_output, amount_channels_attention)
 
-    def forward(self, x, t):
-        x = self.block1(x, t)
+    def forward(self, x, t, c):
+        x = self.block1(x, t, c)
         if self.attention_block is not None:
             x = self.attention_block(x)
-        x = self.block2(x, t)
+        x = self.block2(x, t, c)
         return x
     
 class EncoderBlock(nn.Module):
-    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, use_attention=False):
+    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention=False):
         super(EncoderBlock, self).__init__()
-        self.conv_block = UnetConv2dBlock(amount_channels_input, amount_channels_output, time_emb_dim, use_attention)
+        self.conv_block = UnetConv2dBlock(amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention)
         self.downsampling_layer = nn.MaxPool2d(2)
         self.relu = nn.ReLU()
         
-    def forward(self, x, t):
-        x = self.conv_block(x, t)
+    def forward(self, x, t, c):
+        x = self.conv_block(x, t, c)
         skip_values = x
         x = self.downsampling_layer(x)
         x = self.relu(x)
         return x, skip_values
 
 class DecoderBlock(nn.Module):
-    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, use_attention=False):
+    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention=False):
         super(DecoderBlock, self).__init__()
-        self.conv_block = UnetConv2dBlock(amount_channels_output * 2, amount_channels_output, time_emb_dim, use_attention)
+        self.conv_block = UnetConv2dBlock(amount_channels_output * 2, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention)
         self.upsampling_layer = nn.ConvTranspose2d(amount_channels_input, amount_channels_output, 2, 2)
         self.relu = nn.ReLU()
         
-    def forward(self, x, t, skip_values):
+    def forward(self, x, t, skip_values, c):
         x = self.upsampling_layer(x)
         x = self.relu(x)
         x = torch.cat([x, skip_values], axis=1)
-        x = self.conv_block(x, t)
+        x = self.conv_block(x, t, c)
         return x
 
 class SinusoidalPositionEmbeddingLayer(nn.Module):
@@ -204,14 +226,14 @@ class SinusoidalPositionEmbeddingLayer(nn.Module):
         embeddings = torch.exp(torch.arange(half_dim).to(device) * -embeddings).to(device)
         embeddings = timesteps[:, None] * embeddings[None, :]
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1).to(device)
-
         return embeddings
 
 class NoisePredictionUnet(nn.Module):
     def __init__(self, amounts_channels):
         super(NoisePredictionUnet, self).__init__()
         self.time_emb_dim = 32
-
+        self.cond_emb_dim = 32
+        
         encoder_blocks = []
         decoder_blocks = []
         layers_between = []
@@ -228,18 +250,18 @@ class NoisePredictionUnet(nn.Module):
                 
                 assert encoding_amount_channels_input <= encoding_amount_channels_output
                 
-                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output, self.time_emb_dim, True)
+                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim, True)
                 encoder_blocks.append(encoder_block)
                 
             elif i == len(amounts_channels) - 2:
-                layers_between.append(UnetConv2dBlock(current_amount_channels, next_amount_channels, self.time_emb_dim))
+                layers_between.append(UnetConv2dBlock(current_amount_channels, next_amount_channels, self.time_emb_dim, self.cond_emb_dim))
                 
                 decoding_amount_channels_input = next_amount_channels
                 decoding_amount_channels_output = current_amount_channels
                 
                 assert decoding_amount_channels_input >= decoding_amount_channels_output
                 
-                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output, self.time_emb_dim, True)
+                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim, True)
                 decoder_blocks.insert(0, decoder_block)
                 break
             else:                
@@ -252,10 +274,10 @@ class NoisePredictionUnet(nn.Module):
                 assert encoding_amount_channels_input <= encoding_amount_channels_output
                 assert decoding_amount_channels_input >= decoding_amount_channels_output
                 
-                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output, self.time_emb_dim, True)
+                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim, True)
                 encoder_blocks.append(encoder_block)
                 
-                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output, self.time_emb_dim, True)
+                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim, True)
                 decoder_blocks.insert(0, decoder_block)
                 
         layers = encoder_blocks + layers_between + decoder_blocks + final_layers
@@ -263,6 +285,9 @@ class NoisePredictionUnet(nn.Module):
         self.module_list = nn.ModuleList(layers)
         self.time_emb_mlp = nn.Sequential(SinusoidalPositionEmbeddingLayer(self.time_emb_dim),
                                             nn.Linear(self.time_emb_dim, self.time_emb_dim),
+                                            nn.ReLU())
+        self.cond_emb_mlp = nn.Sequential(MNISTConditionalEmbeddingLayer(self.cond_emb_dim),
+                                            nn.Linear(self.cond_emb_dim, self.cond_emb_dim),
                                             nn.ReLU())
 
     def apply_padding(self, x):
@@ -282,19 +307,22 @@ class NoisePredictionUnet(nn.Module):
         (pad_left, pad_right, pad_up, pad_down) = padding
         return x[:, :, pad_left:-pad_right, pad_up:-pad_down]
     
-    def forward(self, x, t):
+    def forward(self, x, t, c):
         skip_values = []
         t = self.time_emb_mlp(t)
         x, padding = self.apply_padding(x)
+
+        if c is not None:
+            c = self.cond_emb_mlp(c)
         for layer in self.module_list:
             if isinstance(layer, EncoderBlock):
-                x, skip_value = layer(x, t)
+                x, skip_value = layer(x, t, c)
                 skip_values.append(skip_value)
             elif isinstance(layer, DecoderBlock):
                 skip_value = skip_values.pop()
-                x = layer(x, t, skip_value)
+                x = layer(x, t, skip_value, c)
             elif isinstance(layer, UnetConv2dBlock):
-                x = layer(x, t)
+                x = layer(x, t, c)
             else:
                 x = layer(x)
                 
@@ -326,7 +354,7 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
 # ## Sampling
 
-def denoising_process(images, beta, noise_predictor, simple_variance=True):
+def denoising_process(images, beta, noise_predictor, labels=None, simple_variance=True):
     "sample image"
     
     images_size = images.shape
@@ -345,7 +373,7 @@ def denoising_process(images, beta, noise_predictor, simple_variance=True):
 
     with torch.no_grad():
         for timestep in range(timesteps, 0, -1):
-            predicted_noise = noise_predictor(x_t, torch.ones(x_t.shape[0]).to(device) * timestep).to(device)
+            predicted_noise = noise_predictor(x_t, torch.ones(x_t.shape[0]).to(device) * timestep, labels)
             z = torch.normal(torch.zeros(images_size), torch.ones(images_size))
 
             if timestep == 1:
@@ -362,7 +390,6 @@ def denoising_process(images, beta, noise_predictor, simple_variance=True):
     return x_t
 
 
-# +
 def get_training_data_single_timestep(images, variances):
     # Normalizes to [-1, 1] instead of [0, 1].
     images = images * 2 - 1
@@ -378,25 +405,6 @@ def get_training_data_single_timestep(images, variances):
     timesteps = torch.ones(batch_size).int().to(device) * sampled_timestep
     return noisy_images, timesteps, expected_noise
 
-def get_training_data_multiple_timesteps(images, variances):
-    amount_sampled_timesteps = 4
-    batch_size = images.shape[0]
-    
-    # Increases chances of smaller timesteps being picked. 
-    possible_timestep_probabilities = torch.Tensor(range(variances.shape[0] + 1, 1, -1))
-    sampled_timesteps = torch.multinomial(possible_timestep_probabilities, amount_sampled_timesteps).to(device) + 1
-    alpha_cum = torch.cumprod(1 - variances, dim=0).to(device)
-    alpha_cum = alpha_cum[sampled_timesteps - 1]
-    alpha_cum = alpha_cum.repeat_interleave(batch_size)
-    alpha_cum = alpha_cum.repeat_interleave(images.shape[2] * images.shape[3])
-    sampled_timesteps = sampled_timesteps.repeat_interleave(batch_size)
-    images = images.repeat_interleave(amount_sampled_timesteps, dim=0)
-    alpha_cum = alpha_cum.reshape(images.shape)
-    expected_noise = torch.randn(images.shape).to(device)
-    noisy_images = expected_noise * (1 - alpha_cum) + torch.sqrt(alpha_cum) * images
-    noisy_images = noisy_images.clamp(-1, 1)
-    return noisy_images, sampled_timesteps, expected_noise
-
 
 # +
 def get_test_loss():
@@ -404,10 +412,10 @@ def get_test_loss():
     with torch.no_grad():
         batch_test_losses = []
         for batch_index, test_data_batch in enumerate(test_loader):
-            images, _ = test_data_batch
+            images, labels = test_data_batch
             images = images.to(device)
             noisy_images, timesteps, expected_noise = get_training_data_single_timestep(images, variances)
-            predicted_noise = model(noisy_images, timesteps)
+            predicted_noise = model(noisy_images, timesteps, labels)
             loss = get_loss(predicted_noise, expected_noise)
             batch_test_losses.append(loss.item())
         mean_test_loss = np.mean(batch_test_losses)
@@ -416,13 +424,14 @@ def get_test_loss():
     return mean_test_loss
 
 def evaluate_model_results():
-    data_batch, _ = next(iter(test_loader))
+    data_batch, labels = next(iter(test_loader))
 
     if data_batch.shape[0] > 9:
         data_batch = data_batch[:9]
 
     noisy_images = add_noise(data_batch.to(device), variances)
-    denoised_images = denoising_process(noisy_images, variances, model).cpu().permute(0, 2, 3, 1).numpy()
+    labels = labels.to(device)
+    denoised_images = denoising_process(noisy_images, variances, model, labels).cpu().permute(0, 2, 3, 1).numpy()
 
     for i, image in enumerate(denoised_images):
         plt.subplot(1, 9, i + 1)
@@ -463,22 +472,23 @@ train_losses = []
 test_losses = []
     
 for epoch_index in range(epochs):
-    if epoch_index % 5 == 0:
+    if epoch_index % 4 == 0:
         evaluate_model_results()
         
     batch_train_losses = []
     for batch_index, train_data_batch in enumerate(train_loader):
         start_time_batch = time.time()
 
-        images, _ = train_data_batch
+        images, labels = train_data_batch
         images = images.to(device)
         noisy_images, timesteps, expected_noise = get_training_data_single_timestep(images, variances)
-        predicted_noise = model(noisy_images, timesteps)
+        predicted_noise = model(noisy_images, timesteps, labels)
         optimizer.zero_grad()
         loss = get_loss(predicted_noise, expected_noise)
         batch_train_losses.append(loss.item())
         loss.backward()
         optimizer.step()
+        
         del images, noisy_images, timesteps, expected_noise, predicted_noise, loss
 
         if batch_index % 100 == 0:
@@ -515,7 +525,7 @@ plt.yscale("log")
 plt.legend()
 
 
-def plot_model_results(image, amount_columns=10):
+def plot_model_results(image, label=None, amount_columns=10):
     images = image.unsqueeze(0).to(device)
     amount_variances = variances.shape[0]
     selected_timesteps = np.linspace(1, amount_variances, amount_columns, dtype=int)
@@ -532,57 +542,75 @@ def plot_model_results(image, amount_columns=10):
         plt.subplot(2, amount_columns, i + 1 + amount_columns)
         plt.xticks([])
         plt.yticks([])
-        predicted_noises = model(noisy_images, torch.ones(noisy_images.shape[0]).to(device) * timestep)
+        predicted_noises = model(noisy_images, torch.ones(noisy_images.shape[0]).to(device) * timestep, label)
         predicted_noise_to_show = predicted_noises.cpu()[0][0]
         plt.imshow(predicted_noise_to_show, cmap="gray")
     plt.show()
 
 
-# +
-data_batch, _ = next(iter(train_loader))
+data_batch, labels = next(iter(train_loader))
 image = data_batch[0].to(device)
-
+label = labels[0].to(device)
 with torch.no_grad():
-    plot_model_results(image, 9)
+    plot_model_results(image, label, 9)
 
 # +
 selected_variances = variances[:250]
 
-sample_images = next(iter(test_loader))[0][:9]
-plot_images(sample_images.reshape(-1, 28, 28))
+sample_images, labels = next(iter(test_loader))
+sample_images = sample_images[:9]
+labels = labels[:9]
+
+plot_images(sample_images.permute(0, 2, 3, 1).numpy())
 
 noisy_images = add_noise(sample_images.to(device), selected_variances)
-plot_images(noisy_images.cpu().reshape(-1, 28, 28))
+plot_images(noisy_images.permute(0, 2, 3, 1).cpu().numpy())
 
 denoised_images = denoising_process(noisy_images, selected_variances, model)
-plot_images(denoised_images.cpu().reshape(-1, 28, 28))
+plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
+
+denoised_images = denoising_process(noisy_images, selected_variances, model, labels)
+plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
 
 # +
 selected_variances = variances[:500]
 
-sample_images = next(iter(test_loader))[0][:9]
-plot_images(sample_images.reshape(-1, 28, 28))
+sample_images, labels = next(iter(test_loader))
+sample_images = sample_images[:9]
+labels = labels[:9]
+
+plot_images(sample_images.permute(0, 2, 3, 1).numpy())
 
 noisy_images = add_noise(sample_images.to(device), selected_variances)
-plot_images(noisy_images.cpu().reshape(-1, 28, 28))
+plot_images(noisy_images.permute(0, 2, 3, 1).cpu().numpy())
 
 denoised_images = denoising_process(noisy_images, selected_variances, model)
-plot_images(denoised_images.cpu().reshape(-1, 28, 28))
+plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
+
+denoised_images = denoising_process(noisy_images, selected_variances, model, labels)
+plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
 
 # +
-sample_images = next(iter(test_loader))[0][:9]
-plot_images(sample_images.reshape(-1, 28, 28))
+sample_images, labels = next(iter(test_loader))
+sample_images = sample_images[:9]
+labels = labels[:9]
+
+plot_images(sample_images.permute(0, 2, 3, 1).numpy())
 
 noisy_images = add_noise(sample_images.to(device), variances)
-plot_images(noisy_images.cpu().reshape(-1, 28, 28))
+plot_images(noisy_images.permute(0, 2, 3, 1).cpu().numpy())
 
 denoised_images = denoising_process(noisy_images, variances, model)
-plot_images(denoised_images.cpu().reshape(-1, 28, 28))
+plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
+
+denoised_images = denoising_process(noisy_images, variances, model, labels)
+plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
 
 # +
-sample_images_size = [100, 1, 28, 28]
+sample_images_size = [9, 1, 28, 28]
 sample_images = torch.randn(sample_images_size).to(device)
-samples = denoising_process(sample_images, variances, model).cpu().permute(0, 2, 3, 1).numpy()
+labels = torch.tensor(range(9))
+samples = denoising_process(sample_images, variances, model, labels).cpu().permute(0, 2, 3, 1).numpy()
 
 plot_images(samples)
 
