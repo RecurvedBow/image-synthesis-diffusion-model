@@ -75,7 +75,7 @@ variances = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]).to(device)
 noisy_images = add_noise(train_dataset.data.to(device), variances).cpu()
 plot_images(noisy_images)
 
-variances = torch.Tensor(np.linspace(1e-4, 2e-2, 1000)).to(device)
+variances = torch.Tensor(np.linspace(1e-4, 1e-2, 1000)).to(device)
 
 image = train_dataset.data[0].numpy()
 transformer = transforms.ToTensor()
@@ -94,8 +94,10 @@ plot_images(noisy_images.permute(0, 2, 3, 1).numpy())
 
 # +
 class ResidualConv2dBlock(nn.Module):
-    def __init__(self, amount_channels_input, amount_channels_output):
+    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim):
         super(ResidualConv2dBlock, self).__init__()
+        self.time_emb_layer = nn.Sequential(nn.Linear(time_emb_dim, amount_channels_input),
+                                            nn.ReLU())
         self.layers = nn.Sequential(nn.Conv2d(amount_channels_input, amount_channels_output, 3, padding=1),
                                     nn.GroupNorm(2, amount_channels_output),
                                     nn.ReLU(),
@@ -104,7 +106,10 @@ class ResidualConv2dBlock(nn.Module):
                                     nn.ReLU())
         self.residual_layer = nn.Conv2d(amount_channels_input, amount_channels_output, 1)
 
-    def forward(self, x):
+    def forward(self, x, t):
+        t = self.time_emb_layer(t)
+        t = t[(..., ) + (None, ) * 2]
+        x = x + t
         conv_output = self.layers(x)
         residual_output = self.residual_layer(x)
         return conv_output + residual_output
@@ -117,6 +122,7 @@ class ApplyAttentionBlock(nn.Module):
         self.keys_conv2d = nn.Conv2d(amount_channels, self.amount_channels_attention, 1)
         self.values_conv2d = nn.Conv2d(amount_channels, self.amount_channels_attention, 1)
         self.attention_conv2d = nn.Conv2d(self.amount_channels_attention, amount_channels, 1)
+        self.group_norm = nn.GroupNorm(2, amount_channels)
         self.relu = nn.ReLU()
         self.softmax = nn.Softmax(dim=-1)
 
@@ -135,29 +141,28 @@ class ApplyAttentionBlock(nn.Module):
 
         x = x.permute(0, 2, 1).reshape(original_shape[0], self.amount_channels_attention, original_shape[2], original_shape[3])
         x = self.attention_conv2d(x)
+        x = self.group_norm(x)
         x = self.relu(x)
+        
         x = x + residual
         return x
 
 class UnetConv2dBlock(nn.Module):
     def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, use_attention=False):
         super(UnetConv2dBlock, self).__init__()
-        self.time_emb_layer = nn.Linear(time_emb_dim, amount_channels_input)
-        blocks = []
-        blocks.append(ResidualConv2dBlock(amount_channels_input, amount_channels_output))
+        self.block1 = ResidualConv2dBlock(amount_channels_input, amount_channels_output, time_emb_dim)
+        self.block2 = ResidualConv2dBlock(amount_channels_output, amount_channels_output, time_emb_dim)
+        self.attention_block = None
         if use_attention:
-            amount_channels_attention = int(np.sqrt(amount_channels_output))
-            blocks.append(ApplyAttentionBlock(amount_channels_output, amount_channels_attention))
-        blocks.append(ResidualConv2dBlock(amount_channels_output, amount_channels_output))
-        self.residual_conv_blocks = nn.Sequential(*blocks)
-        self.relu = nn.ReLU()
+            # amount_channels_attention = int(np.sqrt(amount_channels_output))
+            amount_channels_attention = amount_channels_output
+            self.attention_block = ApplyAttentionBlock(amount_channels_output, amount_channels_attention)
 
     def forward(self, x, t):
-        t = self.time_emb_layer(t)
-        t = self.relu(t)
-        t = t[(..., ) + (None, ) * 2]
-        x = x + t
-        x = self.residual_conv_blocks(x)
+        x = self.block1(x, t)
+        if self.attention_block is not None:
+            x = self.attention_block(x)
+        x = self.block2(x, t)
         return x
     
 class EncoderBlock(nn.Module):
@@ -308,20 +313,20 @@ def get_loss(predicted_noise, expected_noise):
 
 # # Training
 
-batch_size = 16
-train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
+batch_size = 4
+train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 amount_batches_train = round(np.ceil(train_dataset.data.shape[0] / batch_size))
 amount_batches_test = round(np.ceil(test_dataset.data.shape[0] / batch_size))
 
-model = NoisePredictionUnet([1, 2, 4, 8]).to(device)
+model = NoisePredictionUnet([1, 2, 4, 8, 16, 32]).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
 
 # ## Sampling
 
-def denoising_process(images, beta, noise_predictor, simple_variance=False):
+def denoising_process(images, beta, noise_predictor, simple_variance=True):
     "sample image"
     
     images_size = images.shape
@@ -337,7 +342,7 @@ def denoising_process(images, beta, noise_predictor, simple_variance=False):
     
     variances = variances.to(device)
     x_t = images.to(device)
-    
+
     with torch.no_grad():
         for timestep in range(timesteps, 0, -1):
             predicted_noise = noise_predictor(x_t, torch.ones(x_t.shape[0]).to(device) * timestep).to(device)
@@ -351,37 +356,46 @@ def denoising_process(images, beta, noise_predictor, simple_variance=False):
                     / torch.sqrt(alpha[timestep])
             std = torch.sqrt(variances[timestep])
             x_t = (std * z + mean).to(device)
+
+    # Normalizes to [0, 1] instead of [-1, 1].
+    x_t = (x_t + 1) / 2
     return x_t
 
 
 # +
 def get_training_data_single_timestep(images, variances):
+    # Normalizes to [-1, 1] instead of [0, 1].
+    images = images * 2 - 1
     batch_size = images.shape[0]
+    
     sampled_timestep = np.random.randint(1, variances.shape[0] + 1)
     selected_variances = variances[:sampled_timestep]
     alpha_cum = torch.prod(1 - selected_variances, dim=0)
 
     expected_noise = torch.randn(images.shape).to(device)
     noisy_images = expected_noise * (1 - alpha_cum) + torch.sqrt(alpha_cum) * images
-
-    timesteps = torch.ones(images.shape[0]).int().to(device) * sampled_timestep
+        
+    timesteps = torch.ones(batch_size).int().to(device) * sampled_timestep
     return noisy_images, timesteps, expected_noise
 
-def get_training_data(images, variances):
+def get_training_data_multiple_timesteps(images, variances):
+    amount_sampled_timesteps = 4
     batch_size = images.shape[0]
-    timesteps = torch.Tensor(range(1, variances.shape[0] + 1)).int().to(device)
-    alphas_cum = torch.cumprod(1 - variances, dim=0).to(device)
-
-    timesteps = torch.repeat_interleave(timesteps, images.shape[0], dim=0).to(device)
-    image_size = images.shape[2] * images.shape[3]
-    alphas_cum = torch.repeat_interleave(alphas_cum, image_size, dim=0).to(device)
-    images = torch.repeat_interleave(images, variances.shape[0], dim=0).to(device)
-    alphas_cum = alphas_cum.repeat(batch_size).reshape(images.shape).to(device)
-
+    
+    # Increases chances of smaller timesteps being picked. 
+    possible_timestep_probabilities = torch.Tensor(range(variances.shape[0] + 1, 1, -1))
+    sampled_timesteps = torch.multinomial(possible_timestep_probabilities, amount_sampled_timesteps).to(device) + 1
+    alpha_cum = torch.cumprod(1 - variances, dim=0).to(device)
+    alpha_cum = alpha_cum[sampled_timesteps - 1]
+    alpha_cum = alpha_cum.repeat_interleave(batch_size)
+    alpha_cum = alpha_cum.repeat_interleave(images.shape[2] * images.shape[3])
+    sampled_timesteps = sampled_timesteps.repeat_interleave(batch_size)
+    images = images.repeat_interleave(amount_sampled_timesteps, dim=0)
+    alpha_cum = alpha_cum.reshape(images.shape)
     expected_noise = torch.randn(images.shape).to(device)
-    noisy_images = expected_noise * (1 - alphas_cum) + torch.sqrt(alphas_cum) * images
-
-    return noisy_images, timesteps, expected_noise
+    noisy_images = expected_noise * (1 - alpha_cum) + torch.sqrt(alpha_cum) * images
+    noisy_images = noisy_images.clamp(-1, 1)
+    return noisy_images, sampled_timesteps, expected_noise
 
 
 # +
@@ -443,13 +457,13 @@ plt.tight_layout()
 plt.show()
 
 # +
-epochs = 60
+epochs = 40
 
 train_losses = []
 test_losses = []
-
+    
 for epoch_index in range(epochs):
-    if epoch_index % 10 == 0:
+    if epoch_index % 5 == 0:
         evaluate_model_results()
         
     batch_train_losses = []
@@ -493,28 +507,29 @@ evaluate_model_results()
 
 # # Evaluation
 
-plt.plot(range(len(train_losses)), train_losses, linestyle="dashed", label="Training")
+plt.plot(np.array(range(len(train_losses))) + 0.5, train_losses, linestyle="dashed", label="Training")
 plt.plot(range(len(test_losses)), test_losses, linestyle="dashed", label="Validation")
 plt.xlabel("Epoch")
 plt.ylabel("Mean Loss")
+plt.yscale("log")
 plt.legend()
 
 
-def plot_model_results(image, amount_rows=10):
+def plot_model_results(image, amount_columns=10):
     images = image.unsqueeze(0).to(device)
     amount_variances = variances.shape[0]
-    selected_timesteps = np.linspace(1, amount_variances, amount_rows, dtype=int)
+    selected_timesteps = np.linspace(1, amount_variances, amount_columns, dtype=int)
 
     for i, timestep in enumerate(selected_timesteps):
         selected_variances = variances[:timestep]
-        plt.subplot(amount_rows, 2, 2 * i + 1)
+        plt.subplot(2, amount_columns, i + 1)
         plt.xticks([])
         plt.yticks([])
         noisy_images = add_noise(images, selected_variances).to(device)
         noisy_image_to_show = noisy_images.cpu()[0][0]
         plt.imshow(noisy_image_to_show, cmap="gray")
 
-        plt.subplot(amount_rows, 2, 2 * i + 2)
+        plt.subplot(2, amount_columns, i + 1 + amount_columns)
         plt.xticks([])
         plt.yticks([])
         predicted_noises = model(noisy_images, torch.ones(noisy_images.shape[0]).to(device) * timestep)
@@ -532,6 +547,18 @@ with torch.no_grad():
 
 # +
 selected_variances = variances[:250]
+
+sample_images = next(iter(test_loader))[0][:9]
+plot_images(sample_images.reshape(-1, 28, 28))
+
+noisy_images = add_noise(sample_images.to(device), selected_variances)
+plot_images(noisy_images.cpu().reshape(-1, 28, 28))
+
+denoised_images = denoising_process(noisy_images, selected_variances, model)
+plot_images(denoised_images.cpu().reshape(-1, 28, 28))
+
+# +
+selected_variances = variances[:500]
 
 sample_images = next(iter(test_loader))[0][:9]
 plot_images(sample_images.reshape(-1, 28, 28))
