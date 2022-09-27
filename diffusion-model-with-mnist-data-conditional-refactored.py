@@ -1,6 +1,5 @@
 # The module jupytext is used to treat this .py file as a jupyter notebook file. To keep the output after every session, go to "File" -> "Jupytext" -> "Pair Notebook with ipynb document". This generates a file PY_FILENAME.ipynb.
 
-
 # # Imports
 
 import numpy as np
@@ -89,8 +88,7 @@ for i in range(9):
 plot_images(noisy_images.permute(0, 2, 3, 1).numpy())
 
 
-# # Noise Prediction Model Implementation
-# Uses a UNET architecture to predict the noise of given noisy images.
+# # Model Implementation
 
 # +
 class MNISTConditionalEmbeddingLayer(nn.Module):
@@ -171,26 +169,23 @@ class ApplyAttentionBlock(nn.Module):
         return x
 
 class UnetConv2dBlock(nn.Module):
-    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention=False):
+    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim):
         super(UnetConv2dBlock, self).__init__()
         self.block1 = ResidualConv2dBlock(amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim)
         self.block2 = ResidualConv2dBlock(amount_channels_output, amount_channels_output, time_emb_dim, cond_emb_dim)
-        self.attention_block = None
-        if use_attention:
-            amount_channels_attention = amount_channels_output
-            self.attention_block = ApplyAttentionBlock(amount_channels_output, amount_channels_attention)
+        amount_channels_attention = amount_channels_output
+        self.attention_block = ApplyAttentionBlock(amount_channels_output, amount_channels_attention)
 
     def forward(self, x, t, c):
         x = self.block1(x, t, c)
-        if self.attention_block is not None:
-            x = self.attention_block(x)
+        x = self.attention_block(x)
         x = self.block2(x, t, c)
         return x
     
 class EncoderBlock(nn.Module):
-    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention=False):
+    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim):
         super(EncoderBlock, self).__init__()
-        self.conv_block = UnetConv2dBlock(amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention)
+        self.conv_block = UnetConv2dBlock(amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim)
         self.downsampling_layer = nn.MaxPool2d(2)
         self.relu = nn.ReLU()
         
@@ -202,9 +197,9 @@ class EncoderBlock(nn.Module):
         return x, skip_values
 
 class DecoderBlock(nn.Module):
-    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention=False):
+    def __init__(self, amount_channels_input, amount_channels_output, time_emb_dim, cond_emb_dim):
         super(DecoderBlock, self).__init__()
-        self.conv_block = UnetConv2dBlock(amount_channels_output * 2, amount_channels_output, time_emb_dim, cond_emb_dim, use_attention)
+        self.conv_block = UnetConv2dBlock(amount_channels_output * 2, amount_channels_output, time_emb_dim, cond_emb_dim)
         self.upsampling_layer = nn.ConvTranspose2d(amount_channels_input, amount_channels_output, 2, 2)
         self.relu = nn.ReLU()
         
@@ -228,9 +223,12 @@ class SinusoidalPositionEmbeddingLayer(nn.Module):
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1).to(device)
         return embeddings
 
-class NoisePredictionUnet(nn.Module):
-    def __init__(self, amounts_channels):
-        super(NoisePredictionUnet, self).__init__()
+
+# -
+
+class NoisePredictionModel(nn.Module):
+    def __init__(self, amount_channels_input, amount_encoders_decoders):
+        super(NoisePredictionModel, self).__init__()
         self.time_emb_dim = 32
         self.cond_emb_dim = 32
         
@@ -238,6 +236,12 @@ class NoisePredictionUnet(nn.Module):
         decoder_blocks = []
         layers_between = []
         final_layers = []
+        
+        amounts_channels = [amount_channels_input]
+        for _ in range(amount_encoders_decoders):
+            amounts_channels.append(amounts_channels[-1] * 2)
+        amounts_channels.append(amounts_channels[-1] * 2)
+        
         self.divisor = 2 ** (len(amounts_channels) - 2)
 
         for i, current_amount_channels in enumerate(amounts_channels):
@@ -248,9 +252,7 @@ class NoisePredictionUnet(nn.Module):
                 encoding_amount_channels_input = current_amount_channels
                 encoding_amount_channels_output = next_amount_channels
                 
-                assert encoding_amount_channels_input <= encoding_amount_channels_output
-                
-                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim, True)
+                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim)
                 encoder_blocks.append(encoder_block)
                 
             elif i == len(amounts_channels) - 2:
@@ -259,9 +261,7 @@ class NoisePredictionUnet(nn.Module):
                 decoding_amount_channels_input = next_amount_channels
                 decoding_amount_channels_output = current_amount_channels
                 
-                assert decoding_amount_channels_input >= decoding_amount_channels_output
-                
-                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim, True)
+                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim)
                 decoder_blocks.insert(0, decoder_block)
                 break
             else:                
@@ -270,14 +270,11 @@ class NoisePredictionUnet(nn.Module):
                 
                 decoding_amount_channels_input = next_amount_channels
                 decoding_amount_channels_output = current_amount_channels
-
-                assert encoding_amount_channels_input <= encoding_amount_channels_output
-                assert decoding_amount_channels_input >= decoding_amount_channels_output
                 
-                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim, True)
+                encoder_block = EncoderBlock(encoding_amount_channels_input, encoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim)
                 encoder_blocks.append(encoder_block)
                 
-                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim, True)
+                decoder_block = DecoderBlock(decoding_amount_channels_input, decoding_amount_channels_output, self.time_emb_dim, self.cond_emb_dim)
                 decoder_blocks.insert(0, decoder_block)
                 
         layers = encoder_blocks + layers_between + decoder_blocks + final_layers
@@ -331,12 +328,95 @@ class NoisePredictionUnet(nn.Module):
         return x
 
 
-# -
+class DiffusionModel(nn.Module):
+    def __init__(self, noise_prediction_model, betas, use_simple_variance=True):
+        super(DiffusionModel, self).__init__()
+        assert len(betas.shape) == 1
 
-def get_loss(predicted_noise, expected_noise):
-    mse_loss = nn.MSELoss().to(device)
-    loss = mse_loss(predicted_noise, expected_noise)
-    return loss
+        self.noise_prediction_model = noise_prediction_model
+        self.betas = betas
+        self.use_simple_variance = use_simple_variance
+
+    @torch.no_grad()
+    def add_noise_and_denoise(self, images, labels=None, max_t=None):
+        noisy_images = self.add_noise(images, max_t)
+        denoised_images = self.denoise(noisy_images, labels, max_t)
+        return denoised_images
+
+    @torch.no_grad()
+    def add_noise(self, images, max_t=None):
+        if max_t is not None:
+            assert max_t <= self.betas.shape[0]
+            betas = self.betas[:max_t]
+        else:
+            betas = self.betas
+
+        alphas = 1 - betas
+        alphas_cum = torch.prod(alphas)
+        noise = torch.randn(images.shape).to(device)
+        noisy_images = noise * (1 - alphas_cum) + torch.sqrt(alphas_cum) * images
+        noisy_images = noisy_images.to(device)
+        return noisy_images
+
+    @torch.no_grad()
+    def denoise(self, images, labels=None, max_t=None):
+        if max_t is not None:
+            assert max_t <= self.betas.shape[0]
+            betas = self.betas[:max_t]
+        else:
+            betas = self.betas
+
+        images_size = images.shape
+        timesteps = betas.shape[0] - 1
+        alphas = 1 - betas
+        alphas_cum = torch.cumprod(alphas, dim=0).to(device)
+        
+        if not self.use_simple_variance:
+            alphas_cum_t_minus_1 = torch.cat([torch.Tensor([0]).to(device), alphas_cum[:-1]], axis=0).to(device)
+            betas = (1-alphas_cum_t_minus_1) / (1-alphas_cum) * betas
+
+        betas = betas.to(device)
+        x_t = images.to(device)
+
+        with torch.no_grad():
+            for timestep in range(timesteps, 0, -1):
+                predicted_noise = self.noise_prediction_model(x_t, torch.ones(x_t.shape[0]).to(device) * timestep, labels)
+                z = torch.randn(images_size)
+
+                if timestep == 1:
+                    z = torch.zeros(images_size)
+
+                z = z.to(device)
+                mean = (x_t - (1 - alphas[timestep]) / torch.sqrt(1 - alphas_cum[timestep]) * predicted_noise) \
+                        / torch.sqrt(alphas[timestep])
+                std = torch.sqrt(betas[timestep])
+                x_t = (std * z + mean).to(device)
+
+        # Normalizes to [0, 1] instead of [-1, 1].
+        x_t = (x_t + 1) / 2
+        return x_t
+
+    def get_training_data(self, images):
+        # Normalizes to [-1, 1] instead of [0, 1].
+        images = images * 2 - 1
+        batch_size = images.shape[0]
+
+        sampled_timestep = np.random.randint(1, self.betas.shape[0] + 1)
+        selected_betas = self.betas[:sampled_timestep]
+        alphas_cum = torch.prod(1 - selected_betas, dim=0)
+
+        actual_noise = torch.randn(images.shape).to(device)
+        noisy_images = actual_noise * (1 - alphas_cum) + torch.sqrt(alphas_cum) * images
+
+        timesteps = torch.ones(batch_size).int().to(device) * sampled_timestep
+        return noisy_images, timesteps, actual_noise
+    
+    def forward(self, images, labels=None):
+        noisy_images, timesteps, actual_noise = self.get_training_data(images)
+        predicted_noise = self.noise_prediction_model(noisy_images, timesteps, labels)
+        mse_loss = nn.MSELoss().to(device)
+        loss = mse_loss(predicted_noise, actual_noise)
+        return loss
 
 
 # # Training
@@ -347,63 +427,10 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch
 amount_batches_train = round(np.ceil(train_dataset.data.shape[0] / batch_size))
 amount_batches_test = round(np.ceil(test_dataset.data.shape[0] / batch_size))
 
-model = NoisePredictionUnet([1, 2, 4, 8, 16, 32]).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+noise_prediction_model = NoisePredictionModel(1, 4).to(device)
+diffusion_model = DiffusionModel(noise_prediction_model, variances).to(device)
+optimizer = torch.optim.Adam(noise_prediction_model.parameters(), lr=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
-
-
-# ## Sampling
-
-def denoising_process(images, beta, noise_predictor, labels=None, simple_variance=True):
-    "sample image"
-    
-    images_size = images.shape
-    timesteps = beta.shape[0] - 1
-    alpha = 1 - beta
-    alpha_cum = torch.cumprod(alpha, dim=0).to(device)
-    if simple_variance:
-        variances = beta
-    else:
-        alpha_cum_t_minus_1 = torch.cat([torch.Tensor([0]).to(device), alpha_cum[:-1]], axis=0).to(device)
-        variances = (1-alpha_cum_t_minus_1)/(1-alpha_cum) 
-        variances = variances * beta
-    
-    variances = variances.to(device)
-    x_t = images.to(device)
-
-    with torch.no_grad():
-        for timestep in range(timesteps, 0, -1):
-            predicted_noise = noise_predictor(x_t, torch.ones(x_t.shape[0]).to(device) * timestep, labels)
-            z = torch.normal(torch.zeros(images_size), torch.ones(images_size))
-
-            if timestep == 1:
-                z = torch.zeros(images_size)
-
-            z = z.to(device)
-            mean = (x_t - (1 - alpha[timestep]) / torch.sqrt(1 - alpha_cum[timestep]) * predicted_noise) \
-                    / torch.sqrt(alpha[timestep])
-            std = torch.sqrt(variances[timestep])
-            x_t = (std * z + mean).to(device)
-
-    # Normalizes to [0, 1] instead of [-1, 1].
-    x_t = (x_t + 1) / 2
-    return x_t
-
-
-def get_training_data_single_timestep(images, variances):
-    # Normalizes to [-1, 1] instead of [0, 1].
-    images = images * 2 - 1
-    batch_size = images.shape[0]
-    
-    sampled_timestep = np.random.randint(1, variances.shape[0] + 1)
-    selected_variances = variances[:sampled_timestep]
-    alpha_cum = torch.prod(1 - selected_variances, dim=0)
-
-    expected_noise = torch.randn(images.shape).to(device)
-    noisy_images = expected_noise * (1 - alpha_cum) + torch.sqrt(alpha_cum) * images
-        
-    timesteps = torch.ones(batch_size).int().to(device) * sampled_timestep
-    return noisy_images, timesteps, expected_noise
 
 
 # +
@@ -414,9 +441,7 @@ def get_test_loss():
         for batch_index, test_data_batch in enumerate(test_loader):
             images, labels = test_data_batch
             images = images.to(device)
-            noisy_images, timesteps, expected_noise = get_training_data_single_timestep(images, variances)
-            predicted_noise = model(noisy_images, timesteps, labels)
-            loss = get_loss(predicted_noise, expected_noise)
+            loss = diffusion_model(images, labels)
             batch_test_losses.append(loss.item())
         mean_test_loss = np.mean(batch_test_losses)
         print(f"Average Test Loss: {mean_test_loss}")
@@ -424,14 +449,13 @@ def get_test_loss():
     return mean_test_loss
 
 def evaluate_model_results():
-    data_batch, labels = next(iter(test_loader))
+    images, labels = next(iter(test_loader))
 
-    if data_batch.shape[0] > 9:
-        data_batch = data_batch[:9]
-
-    noisy_images = add_noise(data_batch.to(device), variances)
-    labels = labels.to(device)
-    denoised_images = denoising_process(noisy_images, variances, model, labels).cpu().permute(0, 2, 3, 1).numpy()
+    if images.shape[0] > 9:
+        images = images[:9]
+    
+    images = images.to(device)
+    denoised_images = diffusion_model.add_noise_and_denoise(images, labels).cpu().permute(0, 2, 3, 1).numpy()
 
     for i, image in enumerate(denoised_images):
         plt.subplot(1, 9, i + 1)
@@ -442,27 +466,19 @@ def evaluate_model_results():
 
 
 # +
-data_batch, _ = next(iter(test_loader))
-if data_batch.shape[0] > 9:
-    data_batch = data_batch[:9]
+images, _ = next(iter(test_loader))
 
-amount_images = data_batch.shape[0]
+if images.shape[0] > 9:
+    images = images[:9]
 
-sample_images = data_batch.permute(0, 2, 3, 1).numpy()
-noisy_images = add_noise(data_batch.to(device), variances).cpu().permute(0, 2, 3, 1).numpy()
+amount_images = images.shape[0]
+sample_images = images.permute(0, 2, 3, 1).numpy()
 
 for i, image in enumerate(sample_images):
-    plt.subplot(2, amount_images, i + 1)
+    plt.subplot(1, amount_images, i + 1)
     plt.xticks([])
     plt.yticks([])
     plt.imshow(image, cmap="gray")
-
-    plt.subplot(2, amount_images, i + amount_images + 1)
-    plt.xticks([])
-    plt.yticks([])
-    noisy_image = noisy_images[i]
-    plt.imshow(noisy_image, cmap="gray")
-plt.tight_layout()
 plt.show()
 
 # +
@@ -481,15 +497,15 @@ for epoch_index in range(epochs):
 
         images, labels = train_data_batch
         images = images.to(device)
-        noisy_images, timesteps, expected_noise = get_training_data_single_timestep(images, variances)
-        predicted_noise = model(noisy_images, timesteps, labels)
-        optimizer.zero_grad()
-        loss = get_loss(predicted_noise, expected_noise)
+        loss = diffusion_model(images, labels)
+
         batch_train_losses.append(loss.item())
+        
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         
-        del images, noisy_images, timesteps, expected_noise, predicted_noise, loss
+        del images, labels, loss
 
         if batch_index % 100 == 0:
             end_time = time.time()
@@ -527,23 +543,22 @@ plt.legend()
 
 def plot_model_results(image, label=None, amount_columns=10):
     images = image.unsqueeze(0).to(device)
-    amount_variances = variances.shape[0]
-    selected_timesteps = np.linspace(1, amount_variances, amount_columns, dtype=int)
+    amount_betas = diffusion_model.betas.shape[0]
+    selected_timesteps = np.linspace(1, amount_betas, amount_columns, dtype=int)
 
     for i, timestep in enumerate(selected_timesteps):
-        selected_variances = variances[:timestep]
         plt.subplot(2, amount_columns, i + 1)
         plt.xticks([])
         plt.yticks([])
-        noisy_images = add_noise(images, selected_variances).to(device)
-        noisy_image_to_show = noisy_images.cpu()[0][0]
+        noisy_images = diffusion_model.add_noise(images, timestep).to(device)
+        noisy_image_to_show = noisy_images.cpu().permute(0, 2, 3, 1).numpy()[0]
         plt.imshow(noisy_image_to_show, cmap="gray")
 
         plt.subplot(2, amount_columns, i + 1 + amount_columns)
         plt.xticks([])
         plt.yticks([])
-        predicted_noises = model(noisy_images, torch.ones(noisy_images.shape[0]).to(device) * timestep, label)
-        predicted_noise_to_show = predicted_noises.cpu()[0][0]
+        predicted_noises = diffusion_model.noise_prediction_model(noisy_images, torch.ones(noisy_images.shape[0]).to(device) * timestep, label)
+        predicted_noise_to_show = predicted_noises.cpu().permute(0, 2, 3, 1).numpy()[0]
         plt.imshow(predicted_noise_to_show, cmap="gray")
     plt.show()
 
@@ -555,91 +570,74 @@ with torch.no_grad():
     plot_model_results(image, label, 9)
 
 # +
-selected_variances = variances[:250]
-
 sample_images, labels = next(iter(test_loader))
 sample_images = sample_images[:9]
 labels = labels[:9]
 
 plot_images(sample_images.permute(0, 2, 3, 1).numpy())
+sample_images = sample_images.to(device)
 
-noisy_images = add_noise(sample_images.to(device), selected_variances)
+# +
+selected_timestep = 250
+
+noisy_images = diffusion_model.add_noise(sample_images, selected_timestep)
 plot_images(noisy_images.permute(0, 2, 3, 1).cpu().numpy())
 
-denoised_images = denoising_process(noisy_images, selected_variances, model)
+denoised_images = diffusion_model.denoise(noisy_images, labels, selected_timestep)
 plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
 
-denoised_images = denoising_process(noisy_images, selected_variances, model, labels)
+selected_timestep = 500
+
+noisy_images = diffusion_model.add_noise(sample_images, selected_timestep)
+plot_images(noisy_images.permute(0, 2, 3, 1).cpu().numpy())
+
+denoised_images = diffusion_model.denoise(noisy_images, labels, selected_timestep)
+plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
+
+# Uses all timesteps.
+
+noisy_images = diffusion_model.add_noise(sample_images)
+plot_images(noisy_images.permute(0, 2, 3, 1).cpu().numpy())
+
+denoised_images = diffusion_model.denoise(noisy_images, labels)
 plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
 
 # +
-selected_variances = variances[:500]
-
-sample_images, labels = next(iter(test_loader))
-sample_images = sample_images[:9]
-labels = labels[:9]
-
-plot_images(sample_images.permute(0, 2, 3, 1).numpy())
-
-noisy_images = add_noise(sample_images.to(device), selected_variances)
-plot_images(noisy_images.permute(0, 2, 3, 1).cpu().numpy())
-
-denoised_images = denoising_process(noisy_images, selected_variances, model)
-plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
-
-denoised_images = denoising_process(noisy_images, selected_variances, model, labels)
-plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
-
-# +
-sample_images, labels = next(iter(test_loader))
-sample_images = sample_images[:9]
-labels = labels[:9]
-
-plot_images(sample_images.permute(0, 2, 3, 1).numpy())
-
-noisy_images = add_noise(sample_images.to(device), variances)
-plot_images(noisy_images.permute(0, 2, 3, 1).cpu().numpy())
-
-denoised_images = denoising_process(noisy_images, variances, model)
-plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
-
-denoised_images = denoising_process(noisy_images, variances, model, labels)
-plot_images(denoised_images.permute(0, 2, 3, 1).cpu().numpy())
-
-# +
-sample_images_size = [9, 1, 28, 28]
+sample_images_size = [10, 1, 28, 28]
 sample_images = torch.randn(sample_images_size).to(device)
-labels = torch.tensor(range(9))
-samples = denoising_process(sample_images, variances, model, labels).cpu().permute(0, 2, 3, 1).numpy()
+labels = torch.tensor(range(10))
+samples = diffusion_model.denoise(sample_images, labels).cpu().permute(0, 2, 3, 1).numpy()
 
-plot_images(samples)
+grid_shape = np.array([2, 5])
+for image_index, sample in enumerate(samples):
+    plt.subplot(grid_shape[0], grid_shape[1], image_index + 1)
+    plt.xticks([])
+    plt.yticks([])
+    plt.imshow(sample, cmap="gray")
+plt.show()
 
 
 # -
 # ## FID & Inception Score
 
 def get_image_generation_metrics():
-    test_data = test_dataset.data
+    data_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
     
-    if len(test_data.shape) == 3:
-        test_data = test_data.reshape(test_data.shape[0], 1, test_data.shape[1], test_data.shape[2])
-    
-    data_loader = torch.utils.data.DataLoader(test_data, batch_size=batch_size, shuffle=False)
-    
-    def get_generated_and_actual_images(engine, data_batch):
+    def get_generated_and_actual_images(engine, images_with_labels):
         with torch.no_grad():
-            sample_images_size = data_batch.shape
+            images, labels = images_with_labels
+            sample_images_size = images.shape
             sample_images = torch.randn(sample_images_size).to(device)
-            samples = denoising_process(sample_images, variances, model).cpu()
+            samples = diffusion_model.denoise(sample_images, labels)
         
             samples = torch.cat([samples, samples, samples], dim=1)
-            data_batch = torch.cat([data_batch, data_batch, data_batch], dim=1)
+            images = torch.cat([images, images, images], dim=1)
             
             # Resize images to 299x299
             transform = transforms.Resize(size = (299, 299))
             samples = transform(samples)
-            data_batch = transform(data_batch)
-        return samples, data_batch
+            images = transform(images)
+        return samples, images
 
     engine = Engine(get_generated_and_actual_images)
     
